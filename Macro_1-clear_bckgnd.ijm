@@ -78,9 +78,28 @@ for (i = 0; i < fileList.length; i++) {
         continue;
     }
 
+    // Save averaged image to output folder. Normalize every supported input
+    // extension to the same downstream TIFF naming convention.
+    lowerName = toLowerCase(imageName);
+    if (endsWith(lowerName, ".tiff")) {
+        baseName = substring(imageName, 0, lengthOf(imageName) - 5);
+    } else if (endsWith(lowerName, ".tif")) {
+        baseName = substring(imageName, 0, lengthOf(imageName) - 4);
+    } else if (endsWith(lowerName, ".jpeg")) {
+        baseName = substring(imageName, 0, lengthOf(imageName) - 5);
+    } else if (endsWith(lowerName, ".jpg")) {
+        baseName = substring(imageName, 0, lengthOf(imageName) - 4);
+    } else if (endsWith(lowerName, ".png")) {
+        baseName = substring(imageName, 0, lengthOf(imageName) - 4);
+    } else {
+        baseName = imageName;
+    }
+    outPath = outputDir + baseName + "_RGavg.tif";
+
     // Save averaged image to output folder
     selectImage(avgTitle);
-    saveAs("Tiff", outputDir + replace(imageName, ".tif", "_RGavg.tif"));
+    saveAs("Tiff", outPath);
+    print("Saved RG average: " + outPath);
 
     // Close everything
     run("Close All");
