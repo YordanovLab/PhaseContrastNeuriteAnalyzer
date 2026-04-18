@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neurite Analysis in Phase Contrast Images</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="eyebrow">Interactive Help Page</p>
+      <h1>Neurite Analysis in Phase Contrast Images</h1>
+      <p class="lede">
+        This page is the synchronized interactive help companion to the functional browser app.
+        It explains the same workflow logic, step hierarchy, and interpretation structure as the runnable app.
+      </p>
+      <div class="hero-actions">
+        <a class="button button-secondary" href="#instruction-desk">Open instruction desk</a>
+        <a class="button button-secondary" href="#reference-library">Open reference library</a>
+      </div>
+    </header>
+
+    <section class="panel">
+      <h2>How to use this project right now</h2>
+      <ol class="steps">
+        <li>Use the functional app for running the backend pipeline steps.</li>
+        <li>Use this help page for orientation, explanations, and architecture overview.</li>
+        <li>Confirm the shared settings first.</li>
+        <li>If you use WSL for Fiji, make sure GUI support is enabled because GUI-capable Fiji mode is preferred for reproducible output.</li>
+        <li>Check whether a saved validated cutoff profile already exists.</li>
+        <li>Choose either reuse of that saved profile or a fresh validation cycle.</li>
+      </ol>
+    </section>
+
+    <section class="panel panel-settings" id="settings-module">
+      <div class="reference-head">
+        <div>
+          <p class="eyebrow">Module 1</p>
+          <h2>Settings and required functionality</h2>
+        </div>
+        <p class="reference-note">
+          This is the first module because the early pipeline depends on a shared settings file and on the continuity of the image list handoff.
+        </p>
+      </div>
+      <div class="settings-grid">
+        <article class="settings-card">
+          <h3>Shared settings file</h3>
+          <p class="meta">Backend source: <code>config/pipeline_settings.env</code></p>
+          <p>
+            The core Bash entry scripts now point to one shared settings file for project root, a central output workspace,
+            Fiji, ilastik, the ilastik project file, and common input filenames.
+          </p>
+          <div class="chip-row">
+            <button class="chip" data-topic="settings_module" data-view="summary">Why settings come first</button>
+            <button class="chip" data-topic="settings_module" data-view="critical">Critical fields</button>
+            <button class="chip" data-topic="settings_module" data-view="dependencies">Which scripts depend on them</button>
+          </div>
+        </article>
+
+        <article class="settings-card">
+          <h3>The role of OUT_img_input1.txt</h3>
+          <p class="meta">Pipeline handoff file</p>
+          <p>
+            This file lives inside the central output workspace, fixes the exact image set for downstream preprocessing, and helps keep later outputs reproducible and understandable.
+          </p>
+          <div class="chip-row">
+            <button class="chip" data-topic="settings_module" data-view="imglist">Why the image list matters</button>
+            <button class="chip" data-topic="settings_module" data-view="confirm">What to confirm before running</button>
+          </div>
+        </article>
+
+        <article class="settings-card">
+          <h3>First workflow decision</h3>
+          <p class="meta">Validation cutoff reuse versus fresh validation</p>
+          <p>
+            Before the pipeline branches into validation or production, first check whether there is already a trusted saved validation cutoff profile.
+          </p>
+          <div class="chip-row">
+            <button class="chip" data-topic="validation_profile_module" data-view="summary">Decision logic</button>
+            <button class="chip" data-topic="validation_profile_module" data-view="fresh">Fresh validation path</button>
+            <button class="chip" data-topic="validation_profile_module" data-view="reuse">Reuse saved profile path</button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" id="architecture-module">
+      <div class="reference-head">
+        <div>
+          <p class="eyebrow">Architecture</p>
+          <h2>Execution hierarchy</h2>
+        </div>
+        <p class="reference-note">
+          This makes it clear which Bash runners call R scripts, ImageJ macros, or the ilastik model.
+        </p>
+      </div>
+      <div class="architecture-grid">
+        <article class="settings-card">
+          <h3>Setup and Preprocessing</h3>
+          <ul class="bullets">
+            <li><code>0.Rename.sh</code></li>
+            <li><code>1.get_img_list.sh</code></li>
+            <li><code>2.RunFIJI_clean_bckgnd.sh</code> -> <code>Macro_1-clear_bckgnd.ijm</code></li>
+            <li><code>3.Run_ilastik_model.sh</code> -> ilastik executable -> configured <code>.ilp</code> model</li>
+            <li><code>4.GetArea%Fiji.sh</code> -> <code>Macro_2-get_mask_area_percentages.ijm</code></li>
+          </ul>
+        </article>
+        <article class="settings-card">
+          <h3>Validation and optimization</h3>
+          <ul class="bullets">
+            <li><code>5.SelectValidationImgGroups.sh</code> -> <code>CombineFiles_GetValGroups.R</code></li>
+            <li>manual review -> <code>choice/</code> and <code>noise/</code></li>
+            <li><code>6.SelectedValidationImgWriteSee.sh</code> -> <code>CombinedFiles_after_inspection.R</code></li>
+            <li><code>7.RunOptimization.sh</code> -> <code>saveROIs.ijm</code></li>
+            <li><code>0.ReadROIdata-to-optimize.R</code></li>
+            <li><code>1.OptimizeNeuriteParams-MAJOR_OPTIMIZE.R</code></li>
+          </ul>
+        </article>
+        <article class="settings-card">
+          <h3>Production analysis</h3>
+          <ul class="bullets">
+            <li><code>2.1.Generalize_image_threshold_skeleton_rule.R</code></li>
+            <li><code>3.1.analyzed-generalized-skeleton-data-PCA+ALMOST_WORKING.R</code></li>
+            <li><code>4.1.Skeleton-cutoff-ploting-improved-polished+BG.R</code></li>
+          </ul>
+          <p class="meta">These are the primary supported production files chosen from the approved candidate list.</p>
+        </article>
+        <article class="settings-card">
+          <h3>Visualization and Interpretation</h3>
+          <ul class="bullets">
+            <li>Upstream builders: <code>1.analyze-combine-ROIs-skeletons.R</code>, <code>2.analyze-combine-ROIs-skeletons.R</code></li>
+            <li>Preferred ROI visualization: <code>3.analyze-visualize-check.R</code></li>
+            <li>Preferred ROI visualization plus PCA: <code>3.analysis-check-visualize-readiness-on-test-images2.R</code></li>
+            <li>Production interpretation: <code>3.1.analyzed-generalized-skeleton-data-PCA+ALMOST_WORKING.R</code></li>
+            <li>Final reporting: <code>4.1.Skeleton-cutoff-ploting-improved-polished+BG.R</code></li>
+          </ul>
+          <p class="meta">This module explains and visualizes outputs that were already generated by the earlier image-analysis stages.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" id="mode-module">
+      <div class="reference-head">
+        <div>
+          <p class="eyebrow">Modes</p>
+          <h2>Optimization versus production</h2>
+        </div>
+        <p class="reference-note">
+          Optimization is not always needed for every new image batch. The project now has a cache structure for reusable optimization profiles.
+        </p>
+      </div>
+      <div class="settings-grid">
+        <article class="settings-card">
+          <h3>Fresh optimization</h3>
+          <p>Use this when there is no trusted previous validated cutoff profile, or when the old one may no longer be trustworthy.</p>
+          <p class="meta">Main chain: Validation with Test Images -> Generalization with New Images -> Visualization and Interpretation</p>
+        </article>
+        <article class="settings-card">
+          <h3>Production analysis with a saved validation profile</h3>
+          <p>Use this when a previously validated cutoff profile is still appropriate and you want to move directly into generalization and interpretation.</p>
+          <p class="meta">Preferred cache folder: <code>cache/validation_profiles/</code></p>
+        </article>
+        <article class="settings-card">
+          <h3>Chosen active files</h3>
+          <p>The active supported chain is now documented explicitly instead of being left ambiguous across similarly named scripts.</p>
+          <div class="chip-row">
+            <button class="chip" data-topic="active_choices" data-view="primary">Primary supported chain</button>
+            <button class="chip" data-topic="active_choices" data-view="secondary">Secondary approved files</button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" id="interpretation-module">
+      <div class="reference-head">
+        <div>
+          <p class="eyebrow">Interpretation</p>
+          <h2>Visualization and Interpretation Module</h2>
+        </div>
+        <p class="reference-note">
+          This branch is for understanding what the analysis produced, not for creating the raw segmentation outputs themselves.
+        </p>
+      </div>
+      <div class="settings-grid">
+        <article class="settings-card">
+          <h3>Optimization diagnostics</h3>
+          <p>These scripts help explain separability, feature distributions, and why one threshold region may be better than another.</p>
+          <ul class="bullets">
+            <li><code>2.roi_distribution_analysis.R</code></li>
+            <li><code>3.optimized_grid_search.R</code></li>
+            <li><code>3.analysis-check-visualize-readiness-on-test-images2PCA.R</code></li>
+            <li><code>3.1.analysis-check-skeletons-readiness-on-test-images2PCA.R</code></li>
+          </ul>
+          <div class="chip-row">
+            <button class="chip" data-topic="interpretation_module" data-view="diagnostics">Open optimization diagnostics logic</button>
+          </div>
+        </article>
+        <article class="settings-card">
+          <h3>Visualization and Interpretation Outputs</h3>
+          <p>These scripts are the clearest place to inspect representative images, class comparisons, PCA structure, and final biological result plots.</p>
+          <ul class="bullets">
+            <li><code>3.analyze-visualize-check.R</code></li>
+            <li><code>3.analysis-check-visualize-readiness-on-test-images2.R</code></li>
+            <li><code>3.1.analyzed-generalized-skeleton-data-PCA+ALMOST_WORKING.R</code></li>
+            <li><code>4.1.Skeleton-cutoff-ploting-improved-polished+BG.R</code></li>
+          </ul>
+          <div class="chip-row">
+            <button class="chip" data-topic="interpretation_module" data-view="summary">Open module summary</button>
+            <button class="chip" data-topic="interpretation_module" data-view="hierarchy">Open script hierarchy</button>
+            <button class="chip" data-topic="interpretation_module" data-view="outputs">Open expected outputs</button>
+          </div>
+        </article>
+        <article class="settings-card">
+          <h3>Saved validation profile selection</h3>
+          <p>When profiles exist, the frontend should let the user pick one by date or folder name, then continue directly into generalization and interpretation.</p>
+          <p class="meta">Preferred folder: <code>cache/validation_profiles/</code> | legacy fallback: <code>cache/optimization_profiles/</code></p>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" id="software-module">
+      <div class="reference-head">
+        <div>
+          <p class="eyebrow">Software</p>
+          <h2>Runtime requirements and environment choice</h2>
+        </div>
+        <p class="reference-note">
+          The current scripts are Bash-first and currently align more naturally with Linux or WSL paths than with pure Windows-native execution.
+        </p>
+      </div>
+      <div class="settings-grid">
+        <article class="settings-card">
+          <h3>Required software</h3>
+          <ul class="bullets">
+            <li>Bash</li>
+            <li>R and <code>Rscript</code></li>
+            <li>Fiji / ImageJ</li>
+            <li>ilastik</li>
+            <li>Java</li>
+            <li>R package <code>magick</code> for in-app TIFF previews</li>
+          </ul>
+          <div class="chip-row">
+            <button class="chip" data-topic="software_module" data-view="detected">Detected on this machine</button>
+            <button class="chip" data-topic="software_module" data-view="choice">Windows or WSL guidance</button>
+            <button class="chip" data-topic="software_module" data-view="install">Installation guidance</button>
+            <button class="chip" data-topic="software_module" data-view="repro">Reproducibility versions</button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="workspace">
+      <section class="grid">
+        <article class="card status-pending">
+          <span class="stage">0-1</span>
+          <h3>Prepare image inputs</h3>
+          <p>Rename nested images, preserve hierarchy, and build an absolute image list.</p>
+          <p class="meta">Scripts: <code>0.Rename.sh</code>, <code>1.get_img_list.sh</code></p>
+          <div class="chip-row">
+            <button class="chip" data-topic="prepare_inputs" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="prepare_inputs" data-view="inputs">Inputs and outputs</button>
+            <button class="chip" data-topic="prepare_inputs" data-view="logic">Why this stage exists</button>
+          </div>
+        </article>
+
+        <article class="card status-pending">
+          <span class="stage">2</span>
+          <h3>Fiji preprocessing</h3>
+          <p>Create RG-averaged intensity images for stable downstream segmentation.</p>
+          <p class="meta">Script: <code>2.RunFIJI_clean_bckgnd.sh</code></p>
+          <div class="chip-row">
+            <button class="chip" data-topic="fiji_preprocess" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="fiji_preprocess" data-view="logic">Algorithm logic</button>
+            <button class="chip" data-topic="fiji_preprocess" data-view="files">Related files</button>
+          </div>
+        </article>
+
+        <article class="card status-pending">
+          <span class="stage">3</span>
+          <h3>Ilastik segmentation</h3>
+          <p>Apply the trained ilastik model and produce renormalized mask images.</p>
+          <p class="meta">Script: <code>3.Run_ilastik_model.sh</code></p>
+          <div class="chip-row">
+            <button class="chip" data-topic="ilastik_segmentation" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="ilastik_segmentation" data-view="logic">Algorithm logic</button>
+            <button class="chip" data-topic="ilastik_segmentation" data-view="outputs">Outputs</button>
+          </div>
+        </article>
+
+        <article class="card status-pending">
+          <span class="stage">4</span>
+          <h3>Check segmentation labels</h3>
+          <p>Inspect a representative mask, confirm the three pixel peaks, and assign them to neurites, cell bodies, and background.</p>
+          <p class="meta">App tab: <code>2.A.2. Check Segmentation Label Mapping</code></p>
+          <div class="chip-row">
+            <button class="chip" data-topic="segmentation_label_mapping" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="segmentation_label_mapping" data-view="logic">Pixel label logic</button>
+            <button class="chip" data-topic="segmentation_label_mapping" data-view="outputs">Downstream use</button>
+          </div>
+        </article>
+
+        <article class="card status-pending">
+          <span class="stage">4+</span>
+          <h3>Mask quantification</h3>
+          <p>Measure neurites, cell bodies, and background percentages from the masks.</p>
+          <p class="meta">Script: <code>4.GetArea%Fiji.sh</code></p>
+          <div class="chip-row">
+            <button class="chip" data-topic="mask_quantification" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="mask_quantification" data-view="logic">Pixel label logic</button>
+            <button class="chip" data-topic="mask_quantification" data-view="outputs">Output table</button>
+          </div>
+        </article>
+
+        <article class="card status-attention">
+          <span class="stage">Decision</span>
+          <h3>Check saved validation profiles</h3>
+          <p>First decide whether to reuse a trusted saved cutoff profile or to run a fresh validation cycle on test images.</p>
+          <p class="meta">Folders: <code>cache/validation_profiles/</code> and legacy <code>cache/optimization_profiles/</code></p>
+          <div class="chip-row">
+            <button class="chip" data-topic="validation_profile_module" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="validation_profile_module" data-view="fresh">Fresh validation route</button>
+            <button class="chip" data-topic="validation_profile_module" data-view="reuse">Reuse route</button>
+          </div>
+        </article>
+
+        <article class="card status-attention">
+          <span class="stage">5-6</span>
+          <h3>Manual validation loop</h3>
+          <p>Create quadrant groups, review images manually, then write the labels back into the master table.</p>
+          <p class="meta">Scripts: <code>5.SelectValidationImgGroups.sh</code>, <code>6.SelectedValidationImgWriteSee.sh</code></p>
+          <div class="chip-row">
+            <button class="chip" data-topic="manual_validation" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="manual_validation" data-view="manual">Manual actions</button>
+            <button class="chip" data-topic="manual_validation" data-view="logic">Grouping logic</button>
+          </div>
+        </article>
+
+        <article class="card status-pending">
+          <span class="stage">7+</span>
+          <h3>ROI, skeleton, and analysis</h3>
+          <p>Extract ROIs and skeleton summaries, optimize neurite thresholds, then carry the filtered signal into biological analysis.</p>
+          <p class="meta">Scripts: <code>7.RunOptimization.sh</code> and downstream R scripts</p>
+          <div class="chip-row">
+            <button class="chip" data-topic="roi_analysis" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="roi_analysis" data-view="optimization">Optimization logic</button>
+            <button class="chip" data-topic="roi_analysis" data-view="biology">Biological analysis</button>
+          </div>
+        </article>
+
+        <article class="card status-pending">
+          <span class="stage">Interpret</span>
+          <h3>Visualize and interpret results</h3>
+          <p>Inspect representative ROI behavior, feature structure, PCA patterns, and final biological reporting plots after the core outputs already exist.</p>
+          <p class="meta">Scripts: preferred visualization and reporting R scripts downstream of the analysis outputs</p>
+          <div class="chip-row">
+            <button class="chip" data-topic="interpretation_module" data-view="summary">Open summary</button>
+            <button class="chip" data-topic="interpretation_module" data-view="hierarchy">Input-output hierarchy</button>
+            <button class="chip" data-topic="interpretation_module" data-view="outputs">Output examples</button>
+          </div>
+        </article>
+      </section>
+
+      <aside class="instruction-panel panel" id="instruction-desk">
+        <div class="instruction-head">
+          <div>
+            <p class="eyebrow">Instruction Desk</p>
+            <h2 id="instruction-title">Choose a workflow panel</h2>
+          </div>
+          <button class="button button-ghost" id="reset-instruction" type="button">Reset</button>
+        </div>
+        <p class="instruction-subtitle" id="instruction-subtitle">
+          Click a summary or logic button in a workflow card to open the relevant backend guidance here.
+        </p>
+        <div class="instruction-body" id="instruction-body">
+          <p>
+            This area is meant to keep the important text visible without forcing the user to open separate files.
+            It can show a short stage summary, inputs and outputs, manual actions, or the reasoning behind a step.
+          </p>
+        </div>
+        <div class="instruction-links" id="instruction-links">
+          <a class="button button-secondary" href="#reference-library">Open fuller reference below</a>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel" id="reference-library">
+      <div class="reference-head">
+        <div>
+          <p class="eyebrow">Reference Library</p>
+          <h2>Embedded backend guidance</h2>
+        </div>
+        <p class="reference-note">
+          These sections restate the important backend text in a frontend-readable way, so the user can stay in one place.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-prepare-inputs">
+        <h3>Prepare image inputs</h3>
+        <p>
+          The first step standardizes image identity before any analysis starts. The renaming script creates a
+          <code>PRE_renamed/</code> folder, keeps the nested directory hierarchy, and creates uniquely named hard-linked
+          copies derived from the folder path. The image list script then scans that folder and writes absolute paths
+          into <code>OUT_img_input1.txt</code> so later stages can batch-process the same image set reliably.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-settings">
+        <h3>Settings and required functionality</h3>
+        <p>
+          The project now uses a shared settings file, <code>config/pipeline_settings.env</code>, as the first layer of
+          control. The most important early continuity file is <code>OUT_img_input1.txt</code>, because it freezes the
+          exact list of images that Fiji preprocessing will use. The relevant entry scripts now point to the shared
+          settings file for paths, output folder names, the Fiji binary, the ilastik binary, and the ilastik project.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-validation-profile">
+        <h3>Saved validation cutoff decision</h3>
+        <p>
+          The first important branch in the workflow is whether a trusted validated cutoff profile already exists.
+          If not, the correct logic is: Validation with Test Images, then Generalization with New Images, then output
+          plotting for Visualization and Interpretation. If a saved validated cutoff profile already exists, the user
+          should be allowed to either run a fresh validation again or reuse one saved profile chosen by date or folder
+          name. In the reuse case, the workflow should continue directly with generalization and then visualization and
+          interpretation.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-fiji-preprocess">
+        <h3>Fiji preprocessing</h3>
+        <p>
+          The Fiji preprocessing stage converts each raw RGB image into a single standardized intensity image.
+          The ImageJ macro opens each file, splits the red, green, and blue channels, computes a pixel-wise average
+          of the red and green channels, saves the derived image as an <code>_RGavg.tif</code> output, and closes open
+          images before moving to the next file so memory use remains stable.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-ilastik">
+        <h3>Ilastik segmentation</h3>
+        <p>
+          The ilastik stage applies a trained batch model to the preprocessed images and writes segmentation masks into
+          <code>OUT_segmentation/</code>. After prediction, each mask is renormalized so downstream scripts can rely on
+          stable label values. This is the bridge between raw image intensity and later quantitative neurite measurements.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-mask-quant">
+        <h3>Mask quantification</h3>
+        <p>
+          The mask quantification macro reads the segmentation outputs, builds a 256-bin histogram for each image,
+          and computes class-wise area fractions using the label mapping confirmed in the functional app. The current
+          default mapping is value 1 for cell bodies, value 3 for neurites, and value 255 for background, but the app
+          includes a dedicated segmentation-label check before validation grouping so exchanged labels can be fixed.
+          It writes a single CSV table with image name,
+          cell body percentage, neurite percentage, background percentage, and total area in pixels.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-manual-validation">
+        <h3>Manual validation loop</h3>
+        <p>
+          The validation loop first groups images into biologically useful quadrants, then asks the user to manually
+          separate good examples from noise. The grouping script merges metadata with mask percentages, derives confluence,
+          removes outliers, and relaxes high and low quantile cutoffs until enough candidate images are found in each
+          quadrant. After manual sorting, the inspection script writes those human labels back into the master table.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-roi-analysis">
+        <h3>ROI, optimization, and biological analysis</h3>
+        <p>
+          After validation, the pipeline extracts ROIs and optional skeleton summaries, packages the manually curated
+          images into an optimization-ready R object, and searches ROI threshold rules that best capture neurite biology
+          while resisting confluence artefacts and noise. The later R scripts then generalize the signal rule and carry it
+          into image-level biological analysis, dimensionality reduction, and final reporting plots.
+        </p>
+      </div>
+
+      <div class="reference-section" id="ref-interpretation">
+        <h3>Visualization and Interpretation Module</h3>
+        <p>
+          This module starts only after earlier scripts have already created ROI, ROI+skeleton, optimization, or generalized
+          biological outputs. The most useful upstream builders are <code>1.analyze-combine-ROIs-skeletons.R</code> and
+          <code>2.analyze-combine-ROIs-skeletons.R</code>, which prepare analysis objects later scripts can visualize.
+          The preferred visualization layer is <code>3.analyze-visualize-check.R</code> for representative ROI views and
+          <code>3.analysis-check-visualize-readiness-on-test-images2.R</code> for richer class-comparison and PCA-style
+          interpretation. The main production interpretation and reporting endpoints are
+          <code>3.1.analyzed-generalized-skeleton-data-PCA+ALMOST_WORKING.R</code> and
+          <code>4.1.Skeleton-cutoff-ploting-improved-polished+BG.R</code>.
+        </p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Frontend principles used by the app</h2>
+      <ul class="bullets">
+        <li>One vertical workflow, not a crowded sidebar-first layout.</li>
+        <li>One clear card per stage with inputs, outputs, and launch action.</li>
+        <li>Manual steps should be visibly different from automated steps.</li>
+        <li>Every stage should show where outputs were written.</li>
+        <li>The interface should be honest about which engine runs each step.</li>
+      </ul>
+    </section>
+
+    <section class="panel" id="current-app-tabs">
+      <h2>Current functional app tab structure</h2>
+      <p>
+        The Shiny app is now organized as a practical workbench rather than only a script launcher.
+        The static help page should stay synchronized with this structure.
+      </p>
+      <ol class="steps">
+        <li><strong>1. Configuration:</strong> choose project paths, metadata CSV, input directory, output workspace, Fiji, ilastik, and the trained ilastik project.</li>
+        <li><strong>2. Validate New / Use Prior Cutoffs Model:</strong> either validate new cutoffs with test images or reuse a saved cutoff profile.</li>
+        <li><strong>3. Analyze Test Images:</strong> apply one or more selected cutoff profiles to all production ROI folders and export the generalized image-level feature table.</li>
+        <li><strong>4. Visualization and Interpretation:</strong> inspect training-image roles, PCA/separation, feature screening, grouped plots, covariate correlation, and ANCOVA.</li>
+        <li><strong>5. Reproducible Report:</strong> generate a downloadable HTML report plus an archive of settings, scripts, logs, selected profiles, key outputs, and recreation notes.</li>
+      </ol>
+    </section>
+
+    <section class="panel" id="ilastik-training-guide">
+      <h2>Training the ilastik pixel classifier</h2>
+      <p>
+        The ilastik model should be trained on the same image type that the production pipeline will segment.
+        In this workflow, that means using Fiji-preprocessed <code>OUT_clear_bcgnd/*_RGavg.tif</code> images,
+        not arbitrary raw images from a different preprocessing state.
+      </p>
+      <ol class="steps">
+        <li>Run setup through Fiji preprocessing so the training images have the same background correction / RG-average transformation used later.</li>
+        <li>Create an ilastik <strong>Pixel Classification</strong> project.</li>
+        <li>Add representative preprocessed images spanning low/high confluence, low/high neurites, different treatments, and imaging noise.</li>
+        <li>Create three labels: <strong>background</strong>, <strong>cell bodies</strong>, and <strong>neurites</strong>.</li>
+        <li>Paint examples for empty background and illumination artefacts; soma/cell-body regions and dense cell bodies; thin neurites, branches, and long interrupted neurites.</li>
+        <li>Save the trained <code>.ilp</code> project outside git and point <code>ILASTIK_PROJECT_FILE</code> to it in <code>config/pipeline_settings.env</code>.</li>
+        <li>After segmentation, use the app label-check tab to confirm that downstream labels map to cell bodies = 1, neurites = 3, and background = 255, or remap them if ilastik produced a different order.</li>
+      </ol>
+    </section>
+
+    <section class="panel" id="github-readiness">
+      <h2>GitHub repository readiness</h2>
+      <p>
+        The public GitHub repository should stay small and code-focused. Keep generated outputs, raw images, ROI folders,
+        run logs, local settings, and trained ilastik project files out of git. Use <code>config/pipeline_settings.example.env</code>
+        as the committed template and create <code>config/pipeline_settings.env</code> locally.
+      </p>
+      <ul class="bullets">
+        <li>Use <code>.gitignore</code> to exclude <code>pipeline_inputs/</code>, <code>pipeline_outputs/</code>, <code>cache/</code>, TIFF files, ROI files, and trained models.</li>
+        <li>Upload ~5 GB raw microscopy datasets to Zenodo, Figshare, or OSF; Zenodo is recommended because it provides a persistent DOI and supports datasets of this size.</li>
+        <li>Put dataset and model DOI/download links in <code>README.md</code> after upload.</li>
+        <li>Use tab 5 in the app to produce a reproducibility archive for each finalized analysis.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

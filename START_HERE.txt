@@ -1,0 +1,57 @@
+Neurite Analysis in Phase Contrast Images
+
+What this folder now contains
+- The active pipeline scripts remain in the top-level folder so their current relative paths keep working.
+- Documentation is in docs\
+- Machine-readable pipeline metadata is in config\
+- A simple browser-facing project navigator is in frontend\
+- Cross-platform helper launchers are in launchers\
+
+Best place to begin
+1. Download the dataset from Zenodo: https://zenodo.org/records/19634700
+2. Easiest option: unzip the Zenodo archive directly inside `pipeline_inputs\`.
+3. The app will automatically recognize `pipeline_inputs\raw_images\`, `pipeline_inputs\metadata\`, and `pipeline_inputs\ilastik\model\` if that direct-unzip layout is used.
+4. Copy `config/pipeline_settings.example.env` to `config/pipeline_settings.env` and confirm the shared settings first.
+5. Keep the default base directory as `.` unless you intentionally moved the whole project.
+6. Notice that all generated outputs now belong under the central output workspace, by default `pipeline_outputs\`.
+7. Decide whether you already have a saved validated cutoff profile in `cache\validation_profiles\` or the legacy `cache\optimization_profiles\`.
+8. Start the browser app with the launcher for your system.
+9. Read `docs/PIPELINE_OVERVIEW.md` for the full pipeline logic.
+10. Read `docs/SOFTWARE_SETUP.md` if you need installation help.
+11. Read `docs/ACTIVE_SCRIPT_CHOICES.md` if you want to know which approved files are treated as the supported workflow.
+12. Use `frontend\index.html` as the synchronized interactive help page for the browser app.
+13. Use the active numbered scripts in the project root for the current runnable workflow.
+
+Simple launcher options
+- Windows: double-click START_PIPELINE_Windows.bat
+- Linux or WSL shell: run launchers/start_pipeline.sh
+- Linux desktop: double-click START_PIPELINE_Linux.desktop if your desktop allows it
+
+Important for Windows + WSL users
+- If Fiji will run inside WSL, make sure GUI support is enabled.
+- This project prefers Fiji in GUI-capable mode for reproducible output, because some headless Fiji runs can behave differently.
+
+What the launcher now does
+- First it tries to start the browser app at `http://127.0.0.1:3838`
+- If no usable `Rscript` runtime is found, it falls back to the static navigator in `frontend\index.html`
+- That HTML page should stay synchronized with the functional app as an interactive help surface.
+
+Important design choice
+- The numbered Bash, R, and ImageJ files were intentionally left in the root folder.
+- This avoids breaking their current hard-coded relative-path logic.
+- The project is now organized around them instead of moving them prematurely.
+
+Current active pipeline flow
+1. Check whether a saved validated cutoff profile already exists
+2. If not, run:
+   0.Rename.sh -> 1.get_img_list.sh -> 2.RunFIJI_clean_bckgnd.sh -> 3.Run_ilastik_model.sh -> 4.GetArea%Fiji.sh
+3. Validation with test images:
+   5.SelectValidationImgGroups.sh -> manual inspection -> 6.SelectedValidationImgWriteSee.sh -> 7.RunOptimization.sh -> downstream optimization R scripts
+4. Save the trusted validated cutoff profile if desired
+5. Generalization with new images
+6. Output plotting for visualization and interpretation
+
+Repository upload reminder
+- Do not commit `pipeline_inputs\`, `pipeline_outputs\`, `cache\`, raw TIFF images, ROI folders, or trained ilastik model files.
+- Upload large image datasets and trained models to Zenodo/Figshare/OSF and link their DOI/URL from README.md.
+- Use app tab 5. Reproducible Report to generate a downloadable HTML report plus recreation archive.

@@ -1,0 +1,307 @@
+{
+  "project_name": "Neurite Analysis in Phase Contrast Images",
+  "project_root_strategy": "keep_active_scripts_in_root",
+  "settings_file": "config/pipeline_settings.env",
+  "settings_summary": {
+    "purpose": "Central shared settings for project root, output folders, external executables, and key pipeline filenames.",
+    "critical_fields": [
+      "PROJECT_ROOT",
+      "PRE_RENAMED_DIR_NAME",
+      "IMAGE_INPUT_LIST_NAME",
+      "FIJI_BIN",
+      "ILASTIK_BIN",
+      "ILASTIK_PROJECT_FILE",
+      "OUT_CLEAR_BCGND_DIR_NAME",
+      "OUT_SEGMENTATION_DIR_NAME",
+      "OUT_OPTIMIZE_DIR_NAME",
+      "SAMPLE_METADATA_FILE",
+      "ACTIVE_VALIDATION_PROFILE",
+      "VALIDATION_PROFILE_DIR_NAME"
+    ]
+  },
+  "notes": [
+    "Active scripts remain in the project root to preserve current relative-path behavior.",
+    "This manifest is intended to support a future browser interface.",
+    "The active entry scripts now point to a shared settings file where relevant.",
+    "Primary supported files were chosen only from the user-approved candidate list.",
+    "The first major workflow decision is whether a saved validated cutoff profile already exists and should be reused."
+  ],
+  "workflow_logic": {
+    "first_decision": "Check whether saved validation cutoff outputs already exist.",
+    "if_no_saved_validation_profile": [
+      "validation_with_test_images",
+      "generalization_with_new_images",
+      "visualization_and_interpretation"
+    ],
+    "if_saved_validation_profile_exists": {
+      "choices": [
+        "run_fresh_validation_again",
+        "reuse_saved_validation_profile"
+      ],
+      "reuse_selection_basis": [
+        "profile_date",
+        "profile_folder_name"
+      ],
+      "if_reused": [
+        "generalization_with_new_images",
+        "visualization_and_interpretation"
+      ]
+    }
+  },
+  "primary_supported_r_chain": {
+    "optimization": [
+      "0.ReadROIdata-to-optimize.R",
+      "1.OptimizeNeuriteParams-MAJOR_OPTIMIZE.R"
+    ],
+    "production": [
+      "2.1.Generalize_image_threshold_skeleton_rule.R",
+      "3.1.analyzed-generalized-skeleton-data-PCA+ALMOST_WORKING.R",
+      "4.1.Skeleton-cutoff-ploting-improved-polished+BG.R"
+    ]
+  },
+  "supporting_modules": {
+    "optimization_diagnostics": {
+      "purpose": "Understand parameter ranges, sensitivity, separability, and broader grid-search behavior after the core optimization outputs exist.",
+      "preferred_scripts": [
+        "2.roi_distribution_analysis.R",
+        "3.optimized_grid_search.R",
+        "3.analysis-check-visualize-readiness-on-test-images2PCA.R",
+        "3.1.analysis-check-skeletons-readiness-on-test-images2PCA.R"
+      ]
+    },
+    "visualization_and_interpretation": {
+      "purpose": "Explain and visualize the outputs created by the image-analysis pipeline after ROI, skeleton, or generalized biological summaries already exist.",
+      "upstream_analysis_builders": [
+        "1.analyze-combine-ROIs-skeletons.R",
+        "2.analyze-combine-ROIs-skeletons.R"
+      ],
+      "preferred_scripts": [
+        "3.analyze-visualize-check.R",
+        "3.analysis-check-visualize-readiness-on-test-images2.R",
+        "3.1.analyzed-generalized-skeleton-data-PCA+ALMOST_WORKING.R",
+        "4.1.Skeleton-cutoff-ploting-improved-polished+BG.R"
+      ],
+      "supporting_scripts": [
+        "2.analyze-visualize-check.R"
+      ]
+    }
+  },
+  "steps": [
+    {
+      "id": "shared_settings",
+      "order": -1,
+      "name": "Shared settings and runtime choice",
+      "script": "config/pipeline_settings.env",
+      "type": "settings",
+      "manual_step": true,
+      "phase": "setup",
+      "purpose": "Confirm project root, image list handoff, external executable paths, and operation mode before running the pipeline."
+    },
+    {
+      "id": "validation_profile_decision",
+      "order": -0.5,
+      "name": "Check saved validation cutoff profiles",
+      "script": "launchers/apply_optimization_profile.sh",
+      "type": "settings",
+      "manual_step": true,
+      "phase": "setup",
+      "inputs": ["cache/validation_profiles/", "cache/optimization_profiles/"],
+      "outputs": ["chosen validation profile or decision to rerun validation"],
+      "purpose": "Decide whether to reuse an existing validated cutoff profile or go through a fresh validation cycle."
+    },
+    {
+      "id": "rename_images",
+      "order": 0,
+      "name": "Rename and hard-link images",
+      "script": "0.Rename.sh",
+      "type": "bash",
+      "manual_step": false,
+      "phase": "setup",
+      "inputs": ["nested raw image folders"],
+      "outputs": ["PRE_renamed/"],
+      "purpose": "Create unique path-derived image names while preserving hierarchy with hard links."
+    },
+    {
+      "id": "build_image_list",
+      "order": 1,
+      "name": "Build image list",
+      "script": "1.get_img_list.sh",
+      "type": "bash",
+      "manual_step": false,
+      "phase": "setup",
+      "inputs": ["PRE_renamed/"],
+      "outputs": ["OUT_img_input1.txt"],
+      "purpose": "Generate an absolute-path list of images for batch preprocessing."
+    },
+    {
+      "id": "fiji_background_cleanup",
+      "order": 2,
+      "name": "Run Fiji preprocessing",
+      "script": "2.RunFIJI_clean_bckgnd.sh",
+      "type": "bash",
+      "macro": "Macro_1-clear_bckgnd.ijm",
+      "manual_step": false,
+      "phase": "setup",
+      "calls": ["Macro_1-clear_bckgnd.ijm"],
+      "inputs": ["OUT_img_input1.txt"],
+      "outputs": ["OUT_clear_bcgnd/"],
+      "purpose": "Create standardized RG-averaged intensity images."
+    },
+    {
+      "id": "ilastik_segmentation",
+      "order": 3,
+      "name": "Run ilastik model",
+      "script": "3.Run_ilastik_model.sh",
+      "type": "bash",
+      "model": "Ilastik_model_neurites_sh-sy5y/Ilastik1_probably_working.ilp",
+      "manual_step": false,
+      "phase": "setup",
+      "calls": ["ilastik batch executable", "Ilastik_model_neurites_sh-sy5y/Ilastik1_probably_working.ilp"],
+      "inputs": ["OUT_clear_bcgnd/"],
+      "outputs": ["OUT_segmentation/"],
+      "purpose": "Generate segmentation masks from preprocessed images."
+    },
+    {
+      "id": "quantify_mask_areas",
+      "order": 4,
+      "name": "Quantify mask areas",
+      "script": "4.GetArea%Fiji.sh",
+      "type": "bash",
+      "macro": "Macro_2-get_mask_area_percentages.ijm",
+      "manual_step": false,
+      "phase": "setup",
+      "calls": ["Macro_2-get_mask_area_percentages.ijm"],
+      "inputs": ["OUT_segmentation/"],
+      "outputs": ["OUT_optimize/mask_area_percentages.csv"],
+      "purpose": "Compute label-wise area fractions for cell bodies, neurites, and background."
+    },
+    {
+      "id": "select_validation_groups",
+      "order": 5,
+      "name": "Create validation image groups",
+      "script": "5.SelectValidationImgGroups.sh",
+      "type": "bash",
+      "r_script": "CombineFiles_GetValGroups.R",
+      "manual_step": false,
+      "phase": "optimization",
+      "calls": ["CombineFiles_GetValGroups.R"],
+      "inputs": [
+        "IN_sample_metadata.csv",
+        "OUT_optimize/mask_area_percentages.csv"
+      ],
+      "outputs": [
+        "OUT_optimize/mask_area_percentages+optim_groups.csv",
+        "OUT_optimize/quadrant_selection_report.jpg"
+      ],
+      "purpose": "Build extreme validation quadrants for later manual choice-versus-noise inspection."
+    },
+    {
+      "id": "manual_review",
+      "order": 6,
+      "name": "Manual validation review",
+      "script": null,
+      "type": "manual",
+      "manual_step": true,
+      "phase": "optimization",
+      "inputs": ["OUT_optimize quadrant folders"],
+      "outputs": ["choice/ and noise/ reviewed folders"],
+      "purpose": "Human curation step separating useful examples from noise."
+    },
+    {
+      "id": "write_back_manual_labels",
+      "order": 7,
+      "name": "Write back manual labels",
+      "script": "6.SelectedValidationImgWriteSee.sh",
+      "type": "bash",
+      "r_script": "CombinedFiles_after_inspection.R",
+      "manual_step": false,
+      "phase": "optimization",
+      "calls": ["CombinedFiles_after_inspection.R"],
+      "inputs": ["choice/ and noise/ reviewed folders"],
+      "outputs": [
+        "OUT_optimize/mask_area_percentages+optim_groups+inspected.csv",
+        "OUT_optimize/mask_area_percentages+optim_groups+inspected.jpg"
+      ],
+      "purpose": "Attach manual inspection decisions back to the master optimization table."
+    },
+    {
+      "id": "extract_rois_and_skeletons",
+      "order": 8,
+      "name": "Extract ROIs and skeleton summaries",
+      "script": "7.RunOptimization.sh",
+      "type": "bash",
+      "macro": "saveROIs.ijm",
+      "manual_step": false,
+      "phase": "optimization",
+      "calls": ["saveROIs.ijm"],
+      "inputs": ["OUT_segmentation/"],
+      "outputs": ["OUT_optimize/ROIs/", "skeleton summary outputs"],
+      "purpose": "Export ROI objects and optional skeleton-derived topology summaries."
+    },
+    {
+      "id": "package_roi_data",
+      "order": 9,
+      "name": "Package ROIs for optimization",
+      "script": "0.ReadROIdata-to-optimize.R",
+      "type": "R",
+      "manual_step": false,
+      "phase": "optimization",
+      "inputs": ["OUT_optimize/mask_area_percentages+optim_groups+inspected.csv", "OUT_optimize/ROIs/"],
+      "outputs": ["OUT_optimize/optROIs_data.rds", "OUT_optimize/optROIs_summary.csv"],
+      "purpose": "Create the optimization-ready ROI dataset with metadata and labels."
+    },
+    {
+      "id": "optimize_roi_thresholds",
+      "order": 10,
+      "name": "Optimize neurite ROI thresholds",
+      "script": "1.OptimizeNeuriteParams-MAJOR_OPTIMIZE.R",
+      "type": "R",
+      "manual_step": false,
+      "phase": "optimization",
+      "inputs": ["OUT_optimize/optROIs_data.rds"],
+      "outputs": [
+        "OUT_optimize/parameter_optimization_results.csv",
+        "OUT_optimize/filtered_rois_best_params.csv"
+      ],
+      "purpose": "Search for ROI geometry thresholds that separate neurite biology from confluence and noise."
+    },
+    {
+      "id": "generalize_and_analyze",
+      "order": 11,
+      "name": "Generalize rule and analyze biology",
+      "script": "2.1.Generalize_image_threshold_skeleton_rule.R",
+      "type": "R",
+      "manual_step": false,
+      "phase": "production",
+      "inputs": ["generalized skeleton or ROI data"],
+      "outputs": ["generalized filtered skeleton outputs", "biological analysis outputs"],
+      "purpose": "Move from optimized examples to generalized neurite signal analysis across conditions."
+    },
+    {
+      "id": "visualization_interpretation",
+      "order": 12,
+      "name": "Visualization and interpretation module",
+      "script": "3.analyze-visualize-check.R",
+      "type": "R",
+      "manual_step": false,
+      "phase": "interpretation",
+      "inputs": [
+        "combined ROI or ROI+skeleton analysis outputs",
+        "optimization summaries",
+        "generalized biological analysis outputs"
+      ],
+      "outputs": [
+        "representative ROI visualizations",
+        "PCA or readiness plots",
+        "final biological reporting plots"
+      ],
+      "related_scripts": [
+        "2.analyze-visualize-check.R",
+        "3.analysis-check-visualize-readiness-on-test-images2.R",
+        "3.1.analyzed-generalized-skeleton-data-PCA+ALMOST_WORKING.R",
+        "4.1.Skeleton-cutoff-ploting-improved-polished+BG.R"
+      ],
+      "purpose": "Provide the post-analysis visualization and interpretation layer so the user can inspect threshold behavior, feature structure, and final biological conclusions."
+    }
+  ]
+}

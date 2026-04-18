@@ -1,0 +1,58 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, dataset, trained ilastik model, or outputs generated
+  by this workflow, please cite the GitHub repository, the Zenodo dataset, and
+  the related Pharmacia publication when available.
+title: PhaseContrastNeuriteAnalyzer
+type: software
+authors:
+  - family-names: Yordanov
+    given-names: Yordan
+    affiliation: >-
+      Department of Pharmacology, Pharmacotherapy and Toxicology, Faculty of
+      Pharmacy, Medical University - Sofia, Bulgaria; Research Institute of
+      Innovative Medical Science, Medical University - Sofia, Bulgaria
+  - family-names: Hristova
+    given-names: Siyana
+    affiliation: >-
+      Department of Pharmacology, Pharmacotherapy and Toxicology, Faculty of
+      Pharmacy, Medical University - Sofia, Bulgaria
+repository-code: https://github.com/YordanovLab/PhaseContrastNeuriteAnalyzer
+url: https://github.com/YordanovLab/PhaseContrastNeuriteAnalyzer
+license: MIT
+version: 0.1.0
+date-released: "2026-04-18"
+keywords:
+  - neurite analysis
+  - phase-contrast microscopy
+  - SH-SY5Y
+  - ilastik
+  - Fiji
+  - ImageJ
+  - R Shiny
+  - rosmarinic acid
+  - retinoic acid
+references:
+  - type: dataset
+    title: >-
+      Phase-contrast microscopy dataset for morphological evaluation of the
+      differentiation status of SH-SY5Y cells upon rosmarinic and retinoic acid
+      treatments
+    authors:
+      - family-names: Yordanov
+        given-names: Yordan
+      - family-names: Hristova
+        given-names: Siyana
+    doi: 10.5281/zenodo.19634700
+    url: https://zenodo.org/records/19634700
+  - type: article
+    title: >-
+      Morphological evaluation of the differentiation status of SH-SY5Y cells
+      upon rosmarinic and retinoic acid treatments
+    authors:
+      - family-names: Yordanov
+        given-names: Yordan
+      - family-names: Hristova
+        given-names: Siyana
+    journal: Pharmacia
+    notes: Expected publication; please cite the final published article when available.
