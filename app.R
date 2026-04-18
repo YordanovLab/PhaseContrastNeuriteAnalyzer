@@ -103,6 +103,94 @@ count_raw_image_files <- function(dir) {
   length(files)
 }
 
+input_permission_diagnostics <- function(root, max_report = 12L) {
+  root <- normalizePath(root, winslash = "/", mustWork = FALSE)
+  out <- list(untraversable_dirs = character(), unreadable_files = character())
+  if (!dir.exists(root)) return(out)
+
+  extract_find_permission_paths <- function(lines) {
+    lines <- as.character(lines %||% character())
+    lines <- lines[grepl("Permission denied", lines, ignore.case = TRUE)]
+    if (!length(lines)) return(character())
+    paths <- sub("^find:\\s*", "", lines)
+    paths <- sub("\\s*:\\s*Permission denied.*$", "", paths, ignore.case = TRUE)
+    paths <- gsub("^[`'\u2018\u2019\"]|[`'\u2018\u2019\"]$", "", paths)
+    paths[nzchar(paths)]
+  }
+
+  if (.Platform$OS.type != "windows" && nzchar(Sys.which("find"))) {
+    bad_dirs <- tryCatch(
+      system2("find", c(root, "-type", "d", "!", "-executable", "-print"), stdout = TRUE, stderr = TRUE),
+      error = function(e) character()
+    )
+    bad_files <- tryCatch(
+      system2("find", c(root, "-type", "f", "!", "-readable", "-print"), stdout = TRUE, stderr = TRUE),
+      error = function(e) character()
+    )
+    denied_paths <- unique(c(extract_find_permission_paths(bad_dirs), extract_find_permission_paths(bad_files)))
+    bad_dirs <- bad_dirs[nzchar(bad_dirs) & !grepl("Permission denied", bad_dirs, ignore.case = TRUE)]
+    bad_files <- bad_files[nzchar(bad_files) & !grepl("Permission denied", bad_files, ignore.case = TRUE)]
+    if (length(bad_dirs)) {
+      out$untraversable_dirs <- unique(normalizePath(utils::head(bad_dirs, max_report), winslash = "/", mustWork = FALSE))
+    }
+    if (length(denied_paths)) {
+      out$untraversable_dirs <- unique(c(
+        out$untraversable_dirs,
+        normalizePath(utils::head(denied_paths, max_report), winslash = "/", mustWork = FALSE)
+      ))
+    }
+    if (length(bad_files)) {
+      out$unreadable_files <- unique(normalizePath(utils::head(bad_files, max_report), winslash = "/", mustWork = FALSE))
+    }
+    if (length(out$untraversable_dirs) + length(out$unreadable_files) >= max_report) return(out)
+  }
+
+  queue <- root
+  seen <- character()
+  while (length(queue) && (length(out$untraversable_dirs) + length(out$unreadable_files)) < max_report) {
+    current <- queue[[1]]
+    queue <- queue[-1]
+    current <- normalizePath(current, winslash = "/", mustWork = FALSE)
+    if (current %in% seen) next
+    seen <- c(seen, current)
+    if (file.access(current, mode = 1) != 0) {
+      out$untraversable_dirs <- c(out$untraversable_dirs, current)
+      next
+    }
+    children <- tryCatch(list.files(current, all.files = TRUE, no.. = TRUE, full.names = TRUE), error = function(e) character())
+    if (!length(children)) next
+    child_info <- file.info(children)
+    dirs <- children[!is.na(child_info$isdir) & child_info$isdir]
+    bad_dirs <- dirs[file.access(dirs, mode = 1) != 0]
+    if (length(bad_dirs)) {
+      out$untraversable_dirs <- unique(c(out$untraversable_dirs, normalizePath(bad_dirs, winslash = "/", mustWork = FALSE)))
+    }
+    files <- children[!is.na(child_info$isdir) & !child_info$isdir]
+    candidate_files <- files[grepl("\\.(tif|tiff|png|jpg|jpeg|csv|ilp)$", files, ignore.case = TRUE)]
+    bad_files <- candidate_files[file.access(candidate_files, mode = 4) != 0]
+    if (length(bad_files)) {
+      out$unreadable_files <- unique(c(out$unreadable_files, normalizePath(bad_files, winslash = "/", mustWork = FALSE)))
+    }
+    queue <- c(queue, setdiff(dirs, bad_dirs))
+  }
+  out
+}
+
+format_input_permission_guidance <- function(root, diagnostics) {
+  bad_dirs <- diagnostics$untraversable_dirs %||% character()
+  bad_files <- diagnostics$unreadable_files %||% character()
+  if (!length(bad_dirs) && !length(bad_files)) return(character())
+  c(
+    sprintf("Input permission problem detected under the selected image tree: %s", root),
+    "This can happen after unzipping the Zenodo archive on Linux/WSL if directories lack the execute/search permission bit. Such folders can be listed by name but cannot be entered, so recursive image discovery may find only part of the dataset.",
+    if (length(bad_dirs)) paste("Example untraversable folder(s):", paste(utils::head(bad_dirs, 6), collapse = " | ")) else character(),
+    if (length(bad_files)) paste("Example unreadable file(s):", paste(utils::head(bad_files, 6), collapse = " | ")) else character(),
+    "Click 'Repair Input Folder Permissions' in this browser window to fix the selected input tree automatically.",
+    sprintf("Terminal fallback if the browser button is unavailable: bash ./launchers/repair_input_permissions.sh %s", bash_quote(relative_to_project(root))),
+    "The repair is equivalent to chmod -R u+rwX <input-folder>. The capital X adds execute/search permission to directories without making every image file executable."
+  )
+}
+
 resolve_raw_images_root <- function(configured, input_workspace) {
   candidates <- unique(c(
     configured,
@@ -2267,7 +2355,14 @@ step_prerequisite_issues <- function(step, settings) {
     if (!dir.exists(p$input_master)) {
       issues <- c(issues, sprintf("Master input image directory is missing: %s", p$input_master))
       issues <- c(issues, input_setup_guidance_text(settings))
-    } else if (step_id == "rename") {
+    } else {
+      permission_diagnostics <- input_permission_diagnostics(p$input_master)
+      permission_guidance <- format_input_permission_guidance(p$input_master, permission_diagnostics)
+      if (length(permission_guidance)) {
+        issues <- c(issues, permission_guidance)
+      }
+    }
+    if (dir.exists(p$input_master) && step_id == "rename") {
       image_files <- list.files(p$input_master, pattern = "\\.(tif|tiff|png|jpg|jpeg)$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
       image_files <- image_files[!grepl("(_RGavg|_mask)", basename(image_files), ignore.case = TRUE)]
       if (!length(image_files)) {
@@ -2361,9 +2456,24 @@ latest_step_history <- function(history_df, step_id) {
   subset[1, , drop = FALSE]
 }
 
-detect_failure_explanation <- function(step, last_run, settings) {
+detect_failure_explanation <- function(step, last_run, settings, output_text = NULL) {
   if (is.null(last_run)) return(NULL)
   if (!identical(last_run$status %||% "", "failed")) return(NULL)
+
+  p <- build_paths(settings)
+
+  if ((step$id %||% "") %in% c("rename", "img_list", "fiji", "ilastik") && dir.exists(p$input_master)) {
+    permission_diagnostics <- input_permission_diagnostics(p$input_master)
+    if (length(permission_diagnostics$untraversable_dirs %||% character()) ||
+        length(permission_diagnostics$unreadable_files %||% character())) {
+      return(list(
+        reason = "This step failed because some input folders/files are visible but cannot be entered/read by the runtime.",
+        suggestion = "Click the browser button 'Repair Input Folder Permissions' in this failure panel or in 1. Configuration, then rerun 2.A.1.0. Rename Images. This usually happens after unzipping the Zenodo archive on Linux/WSL when nested directories are missing the execute/search permission bit.",
+        level = "warn",
+        type = "input_permission"
+      ))
+    }
+  }
 
   upstream_issues <- upstream_step_messages(step$id, settings)
   if (length(upstream_issues)) {
@@ -2378,15 +2488,26 @@ detect_failure_explanation <- function(step, last_run, settings) {
   }
 
   log_path <- last_run$log_file %||% ""
-  log_lines <- if (nzchar(log_path) && file.exists(log_path)) {
+  log_lines <- if (!is.null(output_text)) {
+    unlist(strsplit(as.character(output_text %||% ""), "\n", fixed = TRUE))
+  } else if (nzchar(log_path) && file.exists(log_path)) {
     tryCatch(readLines(log_path, warn = FALSE), error = function(e) character())
   } else {
     character()
   }
   joined <- paste(log_lines, collapse = "\n")
 
-  make_result <- function(reason, suggestion, level = "missing") {
-    list(reason = reason, suggestion = suggestion, level = level)
+  make_result <- function(reason, suggestion, level = "missing", type = NULL) {
+    list(reason = reason, suggestion = suggestion, level = level, type = type)
+  }
+
+  if (identical(step$id %||% "", "rename") && grepl("Permission denied|Input permission problem detected|cannot be traversed|inaccessible", joined, ignore.case = TRUE)) {
+    return(make_result(
+      "This step failed because some raw-image folders are visible but cannot be entered by the runtime.",
+      "Open 1. Configuration and click 'Check and Repair Input Folder Permissions', or use the repair button if it is shown in the failure dialog. After repair, rerun 2.A.1.0. Rename Images. This usually happens after unzipping the Zenodo archive on Linux/WSL when nested directories are missing the execute/search permission bit.",
+      level = "warn",
+      type = "input_permission"
+    ))
   }
 
   pkg_hit <- regmatches(joined, regexpr("there is no package called[^\\n]+", joined, ignore.case = TRUE))
@@ -2476,7 +2597,8 @@ detect_failure_explanation <- function(step, last_run, settings) {
   if (grepl("Permission denied|Access is denied", joined, ignore.case = TRUE)) {
     return(make_result(
       "This step failed because the runtime could not access a needed file or command.",
-      "Check file permissions, executable permissions, and whether the selected runtime can reach the configured paths."
+      "If this happened after unzipping the Zenodo archive on Linux/WSL, click 'Repair Input Folder Permissions' in this failure panel or open 1. Configuration and use the same repair button. The raw-image folders may be missing the directory execute/search bit. After repair, rerun the setup step. Otherwise, check file permissions, executable permissions, and whether the selected runtime can reach the configured paths.",
+      type = "input_permission"
     ))
   }
 
@@ -2520,6 +2642,16 @@ detect_failure_explanation <- function(step, last_run, settings) {
   make_result(
     "This step failed, but the app could not read a detailed log explanation.",
     "Open the saved log for this run and check the configured inputs, packages, and external tool paths."
+  )
+}
+
+is_input_permission_failure_info <- function(failure_info) {
+  if (is.null(failure_info)) return(FALSE)
+  if (identical(failure_info$type %||% "", "input_permission")) return(TRUE)
+  grepl(
+    "permission|cannot be entered|cannot access|runtime could not access|folders/files are visible",
+    paste(failure_info$reason %||% "", failure_info$suggestion %||% ""),
+    ignore.case = TRUE
   )
 }
 
@@ -2601,7 +2733,15 @@ build_step_summary_ui <- function(step, history_df) {
         class = paste("step-summary-box", if (identical(failure_info$level %||% "missing", "warn")) "step-summary-warn" else "step-summary-missing"),
         tags$div(class = "step-summary-title", "Why the last run failed"),
         tags$p(failure_info$reason),
-        tags$p(tags$strong("Suggested fix: "), failure_info$suggestion)
+        tags$p(tags$strong("Suggested fix: "), failure_info$suggestion),
+        if (is_input_permission_failure_info(failure_info)) {
+          tags$button(
+            type = "button",
+            class = "btn btn-warning btn-lg",
+            onclick = "Shiny.setInputValue('repair_input_permissions_from_summary_btn', Math.random(), {priority: 'event'});",
+            "Repair Input Folder Permissions"
+          )
+        }
       )
     } else {
       NULL
@@ -3092,6 +3232,16 @@ ui <- fluidPage(
       id = "workplace_tabs",
       tabPanel(
         "1. Configuration",
+        div(
+          class = "manual-panel step-summary-warn",
+          h3("If Zenodo Images Are Missing or Rename Images Fails"),
+          tags$p("After directly unzipping the Zenodo dataset on Linux/WSL, some nested folders can be visible but not enterable. That makes the app find only part of the images and can make 2.A.1.0. Rename Images fail with a generic access error."),
+          tags$p("Use this browser button first. It repairs only the selected input image tree under the current pipeline inputs; it does not touch scripts, Git files, cache, or generated outputs."),
+          actionButton("repair_input_permissions_top_btn", "Repair Input Folder Permissions", class = "btn btn-warning btn-lg"),
+          actionButton("refresh_input_permission_status_top_btn", "Recheck Input Folder", class = "btn btn-default"),
+          tags$p(class = "helper-text", "After the repair finishes, rerun 2.A.1.0. Rename Images. If there is no permission problem, the button is harmless and simply confirms the input tree is accessible.")
+        ),
+        uiOutput("input_permission_callout_ui"),
         fluidRow(
           column(6,
                  div(class = "manual-panel",
@@ -3117,6 +3267,9 @@ ui <- fluidPage(
                      setting_row("Run the backend in", selectInput("runtime_choice", NULL, choices = detect_runtime_choices()), "runtime_choice"),
                      setting_row_with_browse("Search root for 0.Rename.sh", textInput("rename_search_root", NULL, value = "."), "rename_search_root", "browse_rename_search_root"),
                      setting_row_with_browse("Folder to scan for 1.get_img_list.sh", textInput("image_list_source", NULL, value = file.path("pipeline_outputs", "PRE_renamed")), "image_list_source", "browse_image_list_source"),
+                     uiOutput("input_permission_status_ui"),
+                     actionButton("repair_input_permissions_btn", "Check and Repair Input Folder Permissions", class = "btn btn-warning"),
+                     tags$p(class = "helper-text", "Use this after unzipping the Zenodo archive if the app finds too few images or reports Permission denied. It repairs only the selected input image tree."),
                      actionButton("refresh_checks_btn", "Refresh checks"),
                      br(), br(),
                      label_with_help("Runtime summary", "runtime_table"),
@@ -5177,6 +5330,49 @@ server <- function(input, output, session) {
     log_lines(c(log_lines(), line))
   }
 
+  current_input_permission_diagnostics <- reactive({
+    tick()
+    p <- build_paths(settings())
+    input_permission_diagnostics(p$input_master)
+  })
+
+  repair_input_permissions_now <- function() {
+    p <- build_paths(settings())
+    if (!dir.exists(p$input_master)) {
+      showNotification(sprintf("Input directory does not exist: %s", p$input_master), type = "error", duration = 8)
+      return(invisible(FALSE))
+    }
+    removeModal()
+    cmd <- sprintf(
+      "bash ./launchers/repair_input_permissions.sh %s",
+      bash_quote(runtime_path_arg(p$input_master, input$runtime_choice %||% "local"))
+    )
+    withProgress(message = "Repairing input folder permissions", value = 0.2, {
+      append_log("Input permission repair:", sprintf("Repairing %s", p$input_master))
+      res <- run_runtime_command(cmd, input$runtime_choice %||% "local")
+      append_log("Command:", res$command)
+      if (nzchar(res$output)) append_log(res$output)
+      append_log("Exit status:", res$status)
+      tick(tick() + 1L)
+      if (identical(as.integer(res$status), 0L)) {
+        remaining <- input_permission_diagnostics(p$input_master)
+        remaining_count <- length(remaining$untraversable_dirs %||% character()) + length(remaining$unreadable_files %||% character())
+        if (remaining_count > 0) {
+          showNotification("The repair ran, but some input folders/files still look inaccessible. Check the live log and the permission panel.", type = "warning", duration = 10)
+          append_log("Input permission repair:", sprintf("Completed, but %s inaccessible item(s) are still detected.", remaining_count))
+        } else {
+          showNotification("Input folder permissions were repaired. Rerun the setup step or refresh checks.", type = "message", duration = 8)
+          append_log("Input permission repair:", "Completed successfully; no inaccessible input folders/files remain detectable.")
+        }
+        TRUE
+      } else {
+        showNotification("Input permission repair failed. Check the live log for details.", type = "error", duration = 10)
+        append_log("Input permission repair:", "Failed.")
+        FALSE
+      }
+    })
+  }
+
   restore_current_tabs <- function() {
     try(updateTabsetPanel(session, "about_tabs", selected = about_tab_selected()), silent = TRUE)
     try(updateTabsetPanel(session, "workplace_tabs", selected = workplace_tab_selected()), silent = TRUE)
@@ -5570,6 +5766,7 @@ server <- function(input, output, session) {
 
   prerequisite_next_step_ui <- function(current_step, prereq_issues) {
     stale_mask_percentages <- any(grepl("Mask percentages are older than the confirmed segmentation label mapping", prereq_issues, fixed = TRUE))
+    input_permission_issue <- any(grepl("not accessible|untraversable|Permission denied|execute/search", prereq_issues, ignore.case = TRUE))
     tagList(
       tags$p("This step is blocked until the following required inputs or confirmations are available:"),
       tags$ul(lapply(prereq_issues, function(x) tags$li(tags$span(class = "path-block", x)))),
@@ -5578,15 +5775,27 @@ server <- function(input, output, session) {
         tags$div(class = "step-summary-title", "What to do now"),
         tags$p("Your segmentation label mapping was changed or confirmed after the current mask-area table was created. The old table can still contain the old neurite/cell-body label counts, so the validation grouping plot would be misleading."),
         tags$p("Run 2.A.1.4. Quantify Mask Areas now. After that finishes successfully, rerun 2.A.3. Create Validation Groups.")
+      ),
+      if (input_permission_issue) tags$div(
+        class = "step-summary-box step-summary-warn",
+        tags$div(class = "step-summary-title", "What to do now"),
+        tags$p("The app can repair the common direct-unzip permission problem for the selected input image tree. Click the repair button below, then rerun the blocked setup step.")
       )
     )
   }
 
   prerequisite_modal_footer <- function(current_step, prereq_issues) {
     stale_mask_percentages <- any(grepl("Mask percentages are older than the confirmed segmentation label mapping", prereq_issues, fixed = TRUE))
+    input_permission_issue <- any(grepl("not accessible|untraversable|Permission denied|execute/search", prereq_issues, ignore.case = TRUE))
     if (stale_mask_percentages) {
       return(tagList(
         actionButton("run_quantify_from_prereq_btn", "Run 2.A.1.4. Quantify Mask Areas Now", class = "btn-primary"),
+        modalButton("Close")
+      ))
+    }
+    if (input_permission_issue) {
+      return(tagList(
+        actionButton("repair_input_permissions_from_modal_btn", "Repair Input Folder Permissions", class = "btn-warning"),
         modalButton("Close")
       ))
     }
@@ -5600,6 +5809,26 @@ server <- function(input, output, session) {
       footer = prerequisite_modal_footer(current_step, prereq_issues),
       modal_top_close(),
       prerequisite_next_step_ui(current_step, prereq_issues)
+    ))
+  }
+
+  show_input_permission_failure_modal <- function(reason = NULL, suggestion = NULL) {
+    p <- build_paths(settings())
+    showModal(modalDialog(
+      title = "Input Folder Permission Problem",
+      easyClose = TRUE,
+      footer = tagList(
+        actionButton("repair_input_permissions_from_modal_btn", "Repair Input Folder Permissions", class = "btn-warning"),
+        modalButton("Close")
+      ),
+      modal_top_close(),
+      tags$div(
+        class = "step-summary-box step-summary-warn",
+        tags$div(class = "step-summary-title", "Why the step stopped"),
+        tags$p(reason %||% "Some raw-image folders are visible but cannot be entered by the runtime, so recursive image discovery can be incomplete."),
+        tags$p(suggestion %||% "Click the repair button below. The app will repair only the selected input image tree, then you can rerun Rename Images."),
+        tags$p(tags$strong("Selected input image tree: "), tags$span(class = "path-block", p$input_master))
+      )
     ))
   }
 
@@ -5652,7 +5881,11 @@ server <- function(input, output, session) {
           showNotification(paste("Completed:", current_step$title), type = "message")
           handle_success_followup(current_step$id, runtime_choice)
         } else {
-          showNotification(paste("Failed:", current_step$title), type = "error")
+          failure_info <- detect_failure_explanation(current_step, data.frame(status = "failed", log_file = "", stringsAsFactors = FALSE), settings(), output_text = res$output)
+          showNotification(if (!is.null(failure_info)) failure_info$reason else paste("Failed:", current_step$title), type = "error", duration = 10)
+        if (is_input_permission_failure_info(failure_info)) {
+            show_input_permission_failure_modal(failure_info$reason, failure_info$suggestion)
+          }
           restore_current_tabs()
           if (isTRUE(setup_runner$active)) {
             stop_setup_module_run(sprintf("The setup module stopped because %s failed.", current_step$title), type = "error")
@@ -5989,6 +6222,82 @@ server <- function(input, output, session) {
     append_log("Saved shared settings.")
     showNotification("Settings saved.", type = "message")
   })
+
+  output$input_permission_status_ui <- renderUI({
+    p <- build_paths(settings())
+    diagnostics <- current_input_permission_diagnostics()
+    bad_dirs <- diagnostics$untraversable_dirs %||% character()
+    bad_files <- diagnostics$unreadable_files %||% character()
+    image_count <- count_raw_image_files(p$input_master)
+    if (length(bad_dirs) || length(bad_files)) {
+      return(tags$div(
+        class = "step-summary-box step-summary-warn",
+        tags$div(class = "step-summary-title", "Input permission warning"),
+        tags$p(sprintf("The app can see %s raw image file(s), but some folders/files under the selected input tree are not accessible.", image_count)),
+        if (length(bad_dirs)) tags$p(tags$strong("Example folder: "), tags$span(class = "path-block", bad_dirs[[1]])),
+        if (length(bad_files)) tags$p(tags$strong("Example file: "), tags$span(class = "path-block", bad_files[[1]])),
+        tags$p("Click the repair button below to make the selected input image tree readable and traversable.")
+      ))
+    }
+    tags$div(
+      class = "step-summary-box step-summary-good",
+      tags$div(class = "step-summary-title", "Input permission check"),
+      tags$p(sprintf("No inaccessible input folders/files detected. Current raw-image count estimate: %s.", image_count))
+    )
+  })
+
+  output$input_permission_callout_ui <- renderUI({
+    p <- build_paths(settings())
+    diagnostics <- current_input_permission_diagnostics()
+    bad_dirs <- diagnostics$untraversable_dirs %||% character()
+    bad_files <- diagnostics$unreadable_files %||% character()
+    image_count <- count_raw_image_files(p$input_master)
+    issue_detected <- length(bad_dirs) || length(bad_files)
+    tags$div(
+      class = paste("manual-panel", if (issue_detected) "step-summary-warn" else "step-summary-neutral"),
+      tags$h3("Zenodo/Input Folder Permission Check"),
+      tags$p("Use this first if the app reports too few images, the Rename Images step fails with Permission denied, or the Zenodo archive was unzipped on Linux/WSL."),
+      tags$p(tags$strong("Effective raw-image folder: "), tags$span(class = "path-block", p$input_master)),
+      tags$p(tags$strong("Current accessible raw-image count estimate: "), image_count),
+      if (issue_detected) tags$div(
+        tags$p(class = "warning-text", tags$strong("Problem detected: "), "Some input folders/files are visible but cannot be entered/read. Recursive image discovery may therefore be incomplete."),
+        if (length(bad_dirs)) tags$p(tags$strong("Example blocked folder: "), tags$span(class = "path-block", bad_dirs[[1]])),
+        if (length(bad_files)) tags$p(tags$strong("Example blocked file: "), tags$span(class = "path-block", bad_files[[1]])),
+        tags$p("Click the repair button below. The app will repair only this input image tree, then you can rerun 2.A.1.0. Rename Images.")
+      ) else tags$p("No inaccessible input folders/files are currently detected by the app."),
+      actionButton(
+        "repair_input_permissions_callout_btn",
+        if (issue_detected) "Repair Input Folder Permissions Now" else "Recheck/Repair Input Folder Permissions",
+        class = if (issue_detected) "btn btn-warning btn-lg" else "btn btn-default"
+      ),
+      tags$p(class = "helper-text", "This browser button performs the permission repair; terminal commands are only a fallback for advanced troubleshooting.")
+    )
+  })
+
+  observeEvent(input$repair_input_permissions_btn, {
+    repair_input_permissions_now()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$repair_input_permissions_top_btn, {
+    repair_input_permissions_now()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$refresh_input_permission_status_top_btn, {
+    tick(tick() + 1L)
+    showNotification("Input permission status refreshed.", type = "message", duration = 5)
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$repair_input_permissions_callout_btn, {
+    repair_input_permissions_now()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$repair_input_permissions_from_modal_btn, {
+    repair_input_permissions_now()
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$repair_input_permissions_from_summary_btn, {
+    repair_input_permissions_now()
+  }, ignoreInit = TRUE)
 
   persist_optimization_scoring_mode <- function(selected_mode = NULL, announce = FALSE) {
     current <- settings()
@@ -6691,6 +7000,9 @@ server <- function(input, output, session) {
         failure_info <- detect_failure_explanation(runner$step, data.frame(status = "failed", log_file = runner$log_file, stringsAsFactors = FALSE), settings())
         failure_msg <- if (!is.null(failure_info)) failure_info$reason else paste("Failed:", runner$step$title, "- check the log.")
         showNotification(failure_msg, type = "error", duration = 10)
+        if (is_input_permission_failure_info(failure_info)) {
+          show_input_permission_failure_modal(failure_info$reason, failure_info$suggestion)
+        }
         restore_current_tabs()
         finalize_run("failed", exit_status)
       }
@@ -12506,278 +12818,6 @@ server <- function(input, output, session) {
   output$download_history_btn <- downloadHandler(
     filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
     content = function(file) {
-      hist <- history_df()
-      write.csv(hist, file, row.names = FALSE)
-    }
-  )
-
-  output$download_live_log_btn <- downloadHandler(
-    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
-    content = function(file) {
-      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-        file.copy(runner$log_file, file, overwrite = TRUE)
-      } else {
-        writeLines(log_lines(), file)
-      }
-    }
-  )
-
-  output$download_saved_log_btn <- downloadHandler(
-    filename = function() {
-      paste0("saved_run_log_", format(Sys.Date()), ".txt")
-    },
-    content = function(file) {
-      req(nzchar(input$saved_log_choice))
-      file.copy(input$saved_log_choice, file, overwrite = TRUE)
-    }
-  )
-}
-
-app <- shinyApp(ui, server)
-
-if (identical(environment(), globalenv()) && !interactive()) {
-  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
-}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               "btn-danger")
-            )
-          ))
-        } else {
-          run_step_now(current_step, input$runtime_choice)
-        }
-      }, ignoreInit = TRUE)
-
-      observeEvent(input[[paste0("retry_dropouts_", gsub("[^A-Za-z0-9]+", "_", id))]], {
-        current_step <- Filter(function(x) identical(x$id, id), step_specs(settings(), input))[[1]]
-        integrity <- step_integrity_check(current_step, settings())
-        retry_step <- build_dropout_retry_step(current_step, integrity, input$runtime_choice)
-        if (is.null(retry_step)) {
-          showNotification("This step does not currently support retrying only the missing items.", type = "warning")
-        } else {
-          run_step_now(retry_step, input$runtime_choice)
-        }
-      }, ignoreInit = TRUE)
-    })
-  }
-
-  observeEvent(input$clear_log_btn, log_lines(character()))
-
-  output$log_output <- renderText({
-    invalidateLater(1000, session)
-    if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-      file_text <- tryCatch(paste(utils::tail(readLines(runner$log_file, warn = FALSE), 200), collapse = "\n"), error = function(e) "")
-      prefix <- paste(log_lines(), collapse = "\n")
-      trimws(paste(prefix, file_text, sep = if (nzchar(prefix) && nzchar(file_text)) "\n" else ""))
-    } else {
-      paste(log_lines(), collapse = "\n")
-    }
-  })
-
-  output$download_history_btn <- downloadHandler(
-    filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
-    content = function(file) {
-      hist <- history_df()
-      write.csv(hist, file, row.names = FALSE)
-    }
-  )
-
-  output$download_live_log_btn <- downloadHandler(
-    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
-    content = function(file) {
-      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-        file.copy(runner$log_file, file, overwrite = TRUE)
-      } else {
-        writeLines(log_lines(), file)
-      }
-    }
-  )
-
-  output$download_saved_log_btn <- downloadHandler(
-    filename = function() {
-      paste0("saved_run_log_", format(Sys.Date()), ".txt")
-    },
-    content = function(file) {
-      req(nzchar(input$saved_log_choice))
-      file.copy(input$saved_log_choice, file, overwrite = TRUE)
-    }
-  )
-}
-
-app <- shinyApp(ui, server)
-
-if (identical(environment(), globalenv()) && !interactive()) {
-  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
-}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               supports_dropout_retry(current_step$id, integrity)) actionButton("partial_retry_btn", "Retry only the detected dropouts", class = "btn-primary"),
-              actionButton("partial_regenerate_btn", "Delete outputs and regenerate fresh", class = "btn-danger")
-            )
-          ))
-        } else {
-          run_step_now(current_step, input$runtime_choice)
-        }
-      }, ignoreInit = TRUE)
-
-      observeEvent(input[[paste0("retry_dropouts_", gsub("[^A-Za-z0-9]+", "_", id))]], {
-        current_step <- Filter(function(x) identical(x$id, id), step_specs(settings(), input))[[1]]
-        integrity <- step_integrity_check(current_step, settings())
-        retry_step <- build_dropout_retry_step(current_step, integrity, input$runtime_choice)
-        if (is.null(retry_step)) {
-          showNotification("This step does not currently support retrying only the missing items.", type = "warning")
-        } else {
-          run_step_now(retry_step, input$runtime_choice)
-        }
-      }, ignoreInit = TRUE)
-    })
-  }
-
-  observeEvent(input$clear_log_btn, log_lines(character()))
-
-  output$log_output <- renderText({
-    invalidateLater(1000, session)
-    if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-      file_text <- tryCatch(paste(utils::tail(readLines(runner$log_file, warn = FALSE), 200), collapse = "\n"), error = function(e) "")
-      prefix <- paste(log_lines(), collapse = "\n")
-      trimws(paste(prefix, file_text, sep = if (nzchar(prefix) && nzchar(file_text)) "\n" else ""))
-    } else {
-      paste(log_lines(), collapse = "\n")
-    }
-  })
-
-  output$download_history_btn <- downloadHandler(
-    filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
-    content = function(file) {
-      hist <- history_df()
-      write.csv(hist, file, row.names = FALSE)
-    }
-  )
-
-  output$download_live_log_btn <- downloadHandler(
-    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
-    content = function(file) {
-      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-        file.copy(runner$log_file, file, overwrite = TRUE)
-      } else {
-        writeLines(log_lines(), file)
-      }
-    }
-  )
-
-  output$download_saved_log_btn <- downloadHandler(
-    filename = function() {
-      paste0("saved_run_log_", format(Sys.Date()), ".txt")
-    },
-    content = function(file) {
-      req(nzchar(input$saved_log_choice))
-      file.copy(input$saved_log_choice, file, overwrite = TRUE)
-    }
-  )
-}
-
-app <- shinyApp(ui, server)
-
-if (identical(environment(), globalenv()) && !interactive()) {
-  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
-}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         file_text, sep = if (nzchar(prefix) && nzchar(file_text)) "\n" else ""))
-    } else {
-      paste(log_lines(), collapse = "\n")
-    }
-  })
-
-  output$download_history_btn <- downloadHandler(
-    filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
-    content = function(file) {
-      hist <- history_df()
-      write.csv(hist, file, row.names = FALSE)
-    }
-  )
-
-  output$download_live_log_btn <- downloadHandler(
-    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
-    content = function(file) {
-      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-        file.copy(runner$log_file, file, overwrite = TRUE)
-      } else {
-        writeLines(log_lines(), file)
-      }
-    }
-  )
-
-  output$download_saved_log_btn <- downloadHandler(
-    filename = function() {
-      paste0("saved_run_log_", format(Sys.Date()), ".txt")
-    },
-    content = function(file) {
-      req(nzchar(input$saved_log_choice))
-      file.copy(input$saved_log_choice, file, overwrite = TRUE)
-    }
-  )
-}
-
-app <- shinyApp(ui, server)
-
-if (identical(environment(), globalenv()) && !interactive()) {
-  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
-}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                tep, settings())
-        retry_step <- build_dropout_retry_step(current_step, integrity, input$runtime_choice)
-        if (is.null(retry_step)) {
-          showNotification("This step does not currently support retrying only the missing items.", type = "warning")
-        } else {
-          run_step_now(retry_step, input$runtime_choice)
-        }
-      }, ignoreInit = TRUE)
-    })
-  }
-
-  observeEvent(input$clear_log_btn, log_lines(character()))
-
-  output$log_output <- renderText({
-    invalidateLater(1000, session)
-    if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-      file_text <- tryCatch(paste(utils::tail(readLines(runner$log_file, warn = FALSE), 200), collapse = "\n"), error = function(e) "")
-      prefix <- paste(log_lines(), collapse = "\n")
-      trimws(paste(prefix, file_text, sep = if (nzchar(prefix) && nzchar(file_text)) "\n" else ""))
-    } else {
-      paste(log_lines(), collapse = "\n")
-    }
-  })
-
-  output$download_history_btn <- downloadHandler(
-    filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
-    content = function(file) {
-      hist <- history_df()
-      write.csv(hist, file, row.names = FALSE)
-    }
-  )
-
-  output$download_live_log_btn <- downloadHandler(
-    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
-    content = function(file) {
-      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-        file.copy(runner$log_file, file, overwrite = TRUE)
-      } else {
-        writeLines(log_lines(), file)
-      }
-    }
-  )
-
-  output$download_saved_log_btn <- downloadHandler(
-    filename = function() {
-      paste0("saved_run_log_", format(Sys.Date()), ".txt")
-    },
-    content = function(file) {
-      req(nzchar(input$saved_log_choice))
-      file.copy(input$saved_log_choice, file, overwrite = TRUE)
-    }
-  )
-}
-
-app <- shinyApp(ui, server)
-
-if (identical(environment(), globalenv()) && !interactive()) {
-  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
-}
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           function(file) {
       hist <- history_df()
       write.csv(hist, file, row.names = FALSE)
     }
