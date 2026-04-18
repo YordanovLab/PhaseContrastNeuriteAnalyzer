@@ -11,8 +11,10 @@ Download the dataset from Zenodo:
 - DOI: https://doi.org/10.5281/zenodo.19634700
 - Record: https://zenodo.org/records/19634700
 
-After extracting the Zenodo archive, copy the contents of its `raw_images/`
-folder directly into this `pipeline_inputs/` folder.
+Recommended simple option:
+
+Unzip the Zenodo archive directly inside this `pipeline_inputs/` folder. The app
+will detect the archive layout and use the correct production image root.
 
 Simple fallback for novice users:
 
@@ -27,12 +29,35 @@ pipeline_inputs/
   example_outputs/
 ```
 
-it will automatically use `pipeline_inputs/raw_images/` as the image root,
+it will automatically use `pipeline_inputs/raw_images/` as the production image root,
 `pipeline_inputs/metadata/IN_sample_metadata_zenodo_paths.csv` as the metadata
 file, and `pipeline_inputs/ilastik/model/*.ilp` as the fallback ilastik project
 file if no model is found in `models/`.
 
-The result should look like this:
+The production image scan intentionally ignores `pipeline_inputs/ilastik/`,
+`software_reference/`, ilastik training folders, example outputs, and the ZIP
+file itself. This prevents the ilastik training subset from being mistaken for
+the full analysis image set.
+
+If only part of the dataset is found after unzipping on Linux/WSL, check for
+permission problems. A folder can appear in `ls` but still fail with
+`Permission denied` if it lacks the directory execute/search bit. From the
+repository root, repair only the input image tree with:
+
+```bash
+bash ./launchers/repair_input_permissions.sh ./pipeline_inputs/raw_images
+```
+
+Manual equivalent:
+
+```bash
+chmod -R u+rwX ./pipeline_inputs/raw_images
+```
+
+The capital `X` is important: it adds execute/search permission to directories
+without making every raw image file executable.
+
+Alternative manual-copy option:
 
 ```text
 pipeline_inputs/
@@ -44,8 +69,8 @@ pipeline_inputs/
   ...
 ```
 
-Do not copy the archive as `pipeline_inputs/raw_images/...`; copy the contents
-of `raw_images/` into `pipeline_inputs/`.
+If you prefer this flatter layout, copy the contents of the Zenodo `raw_images/`
+folder directly into `pipeline_inputs/`.
 
 Then copy:
 
@@ -65,6 +90,10 @@ Finally, update `config/pipeline_settings.env` so it contains:
 INPUT_MASTER_DIR="./pipeline_inputs"
 SAMPLE_METADATA_FILE="./pipeline_inputs/IN_sample_metadata.csv"
 ```
+
+For the direct-unzip layout, it is also fine if `INPUT_MASTER_DIR` remains
+`pipeline_inputs`; the app will automatically choose `pipeline_inputs/raw_images`
+when that folder contains the full raw-image tree.
 
 ## Using your own images and model
 

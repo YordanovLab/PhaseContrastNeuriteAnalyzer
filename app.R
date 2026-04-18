@@ -93,14 +93,34 @@ first_matching_path <- function(dirs, pattern) {
   ""
 }
 
+count_raw_image_files <- function(dir) {
+  if (!dir.exists(dir)) return(0L)
+  files <- list.files(dir, pattern = "\\.(tif|tiff|png|jpg|jpeg)$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
+  if (!length(files)) return(0L)
+  files <- normalizePath(files, winslash = "/", mustWork = FALSE)
+  files <- files[!grepl("/(ilastik|software_reference|example_expected_outputs|training_images_raw|training_images_preprocessed)/", files, ignore.case = TRUE)]
+  files <- files[!grepl("(_RGavg|_mask|_mask_renorm)\\.", basename(files), ignore.case = TRUE)]
+  length(files)
+}
+
+resolve_raw_images_root <- function(configured, input_workspace) {
+  candidates <- unique(c(
+    configured,
+    file.path(configured, "raw_images"),
+    file.path(input_workspace, "raw_images"),
+    list.files(input_workspace, pattern = "^raw_images$", recursive = TRUE, full.names = TRUE, ignore.case = FALSE)
+  ))
+  candidates <- candidates[dir.exists(candidates)]
+  if (!length(candidates)) return(configured)
+  counts <- vapply(candidates, count_raw_image_files, integer(1))
+  if (max(counts, na.rm = TRUE) <= 0) return(configured)
+  normalizePath(candidates[[which.max(counts)]], winslash = "/", mustWork = FALSE)
+}
+
 effective_input_master_dir <- function(settings) {
   input_workspace <- normalize_project_path(settings$INPUT_WORKSPACE_DIR_NAME %||% "pipeline_inputs")
   configured <- normalize_project_path(settings$INPUT_MASTER_DIR %||% "pipeline_inputs")
-  direct_unzip_raw <- file.path(input_workspace, "raw_images")
-  if (dir.exists(direct_unzip_raw) && identical(normalizePath(configured, winslash = "/", mustWork = FALSE), normalizePath(input_workspace, winslash = "/", mustWork = FALSE))) {
-    return(normalizePath(direct_unzip_raw, winslash = "/", mustWork = FALSE))
-  }
-  configured
+  resolve_raw_images_root(configured, input_workspace)
 }
 
 effective_metadata_file <- function(settings) {
@@ -1448,12 +1468,15 @@ step_integrity_check <- function(step, settings) {
   if (step_id == "rename") {
     input_root <- p$input_master
     source_files <- if (dir.exists(input_root)) {
-      list.files(input_root, pattern = "\\.tif$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
+      source_files <- list.files(input_root, pattern = "\\.(tif|tiff|png|jpg|jpeg)$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
+      source_files <- normalizePath(source_files, winslash = "/", mustWork = FALSE)
+      source_files <- source_files[!grepl("/(ilastik|software_reference|example_expected_outputs|training_images_raw|training_images_preprocessed)/", source_files, ignore.case = TRUE)]
+      source_files[!grepl("(_RGavg|_mask|_mask_renorm)\\.", basename(source_files), ignore.case = TRUE)]
     } else {
       character()
     }
     expected_names <- rename_expected_names(source_files, input_root)
-    found_names <- produced_image_basenames(p$pre_renamed, "\\.tif$")
+    found_names <- produced_image_basenames(p$pre_renamed, "\\.(tif|tiff|png|jpg|jpeg)$")
     cmp <- summarize_name_dropout(expected_names, found_names)
     expected <- cmp$expected_count
     found <- cmp$found_count
@@ -5658,7 +5681,10 @@ server <- function(input, output, session) {
     if (current_step$id == "rename") {
       input_root <- build_paths(settings())$input_master
       source_files <- if (dir.exists(input_root)) {
-        list.files(input_root, pattern = "\\.tif$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
+        source_files <- list.files(input_root, pattern = "\\.(tif|tiff|png|jpg|jpeg)$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
+        source_files <- normalizePath(source_files, winslash = "/", mustWork = FALSE)
+        source_files <- source_files[!grepl("/(ilastik|software_reference|example_expected_outputs|training_images_raw|training_images_preprocessed)/", source_files, ignore.case = TRUE)]
+        source_files[!grepl("(_RGavg|_mask|_mask_renorm)\\.", basename(source_files), ignore.case = TRUE)]
       } else {
         character()
       }
@@ -12512,3 +12538,143 @@ app <- shinyApp(ui, server)
 if (identical(environment(), globalenv()) && !interactive()) {
   runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
 }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               "btn-danger")
+            )
+          ))
+        } else {
+          run_step_now(current_step, input$runtime_choice)
+        }
+      }, ignoreInit = TRUE)
+
+      observeEvent(input[[paste0("retry_dropouts_", gsub("[^A-Za-z0-9]+", "_", id))]], {
+        current_step <- Filter(function(x) identical(x$id, id), step_specs(settings(), input))[[1]]
+        integrity <- step_integrity_check(current_step, settings())
+        retry_step <- build_dropout_retry_step(current_step, integrity, input$runtime_choice)
+        if (is.null(retry_step)) {
+          showNotification("This step does not currently support retrying only the missing items.", type = "warning")
+        } else {
+          run_step_now(retry_step, input$runtime_choice)
+        }
+      }, ignoreInit = TRUE)
+    })
+  }
+
+  observeEvent(input$clear_log_btn, log_lines(character()))
+
+  output$log_output <- renderText({
+    invalidateLater(1000, session)
+    if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
+      file_text <- tryCatch(paste(utils::tail(readLines(runner$log_file, warn = FALSE), 200), collapse = "\n"), error = function(e) "")
+      prefix <- paste(log_lines(), collapse = "\n")
+      trimws(paste(prefix, file_text, sep = if (nzchar(prefix) && nzchar(file_text)) "\n" else ""))
+    } else {
+      paste(log_lines(), collapse = "\n")
+    }
+  })
+
+  output$download_history_btn <- downloadHandler(
+    filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
+    content = function(file) {
+      hist <- history_df()
+      write.csv(hist, file, row.names = FALSE)
+    }
+  )
+
+  output$download_live_log_btn <- downloadHandler(
+    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
+    content = function(file) {
+      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
+        file.copy(runner$log_file, file, overwrite = TRUE)
+      } else {
+        writeLines(log_lines(), file)
+      }
+    }
+  )
+
+  output$download_saved_log_btn <- downloadHandler(
+    filename = function() {
+      paste0("saved_run_log_", format(Sys.Date()), ".txt")
+    },
+    content = function(file) {
+      req(nzchar(input$saved_log_choice))
+      file.copy(input$saved_log_choice, file, overwrite = TRUE)
+    }
+  )
+}
+
+app <- shinyApp(ui, server)
+
+if (identical(environment(), globalenv()) && !interactive()) {
+  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
+}
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               supports_dropout_retry(current_step$id, integrity)) actionButton("partial_retry_btn", "Retry only the detected dropouts", class = "btn-primary"),
+              actionButton("partial_regenerate_btn", "Delete outputs and regenerate fresh", class = "btn-danger")
+            )
+          ))
+        } else {
+          run_step_now(current_step, input$runtime_choice)
+        }
+      }, ignoreInit = TRUE)
+
+      observeEvent(input[[paste0("retry_dropouts_", gsub("[^A-Za-z0-9]+", "_", id))]], {
+        current_step <- Filter(function(x) identical(x$id, id), step_specs(settings(), input))[[1]]
+        integrity <- step_integrity_check(current_step, settings())
+        retry_step <- build_dropout_retry_step(current_step, integrity, input$runtime_choice)
+        if (is.null(retry_step)) {
+          showNotification("This step does not currently support retrying only the missing items.", type = "warning")
+        } else {
+          run_step_now(retry_step, input$runtime_choice)
+        }
+      }, ignoreInit = TRUE)
+    })
+  }
+
+  observeEvent(input$clear_log_btn, log_lines(character()))
+
+  output$log_output <- renderText({
+    invalidateLater(1000, session)
+    if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
+      file_text <- tryCatch(paste(utils::tail(readLines(runner$log_file, warn = FALSE), 200), collapse = "\n"), error = function(e) "")
+      prefix <- paste(log_lines(), collapse = "\n")
+      trimws(paste(prefix, file_text, sep = if (nzchar(prefix) && nzchar(file_text)) "\n" else ""))
+    } else {
+      paste(log_lines(), collapse = "\n")
+    }
+  })
+
+  output$download_history_btn <- downloadHandler(
+    filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
+    content = function(file) {
+      hist <- history_df()
+      write.csv(hist, file, row.names = FALSE)
+    }
+  )
+
+  output$download_live_log_btn <- downloadHandler(
+    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
+    content = function(file) {
+      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
+        file.copy(runner$log_file, file, overwrite = TRUE)
+      } else {
+        writeLines(log_lines(), file)
+      }
+    }
+  )
+
+  output$download_saved_log_btn <- downloadHandler(
+    filename = function() {
+      paste0("saved_run_log_", format(Sys.Date()), ".txt")
+    },
+    content = function(file) {
+      req(nzchar(input$saved_log_choice))
+      file.copy(input$saved_log_choice, file, overwrite = TRUE)
+    }
+  )
+}
+
+app <- shinyApp(ui, server)
+
+if (identical(environment(), globalenv()) && !interactive()) {
+  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
+}
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     

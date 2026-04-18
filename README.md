@@ -101,10 +101,28 @@ pipeline_inputs/example_outputs/
 ```
 
 The app and shell launchers automatically detect this layout. They use
-`pipeline_inputs/raw_images/` as the effective raw-image root,
+`pipeline_inputs/raw_images/` as the effective production raw-image root,
 `pipeline_inputs/metadata/IN_sample_metadata_zenodo_paths.csv` as the metadata
 fallback, and `pipeline_inputs/ilastik/model/*.ilp` as the ilastik project
 fallback if `models/Ilastik1_probably_working.ilp` is not present.
+
+The production scan deliberately excludes `pipeline_inputs/ilastik/`,
+`software_reference/`, ilastik training folders, example outputs, generated
+mask/preprocessed filenames, and the ZIP archive itself. If a fresh computer
+only reports the smaller ilastik training subset instead of the full 500+ raw
+images, refresh or save the Configuration tab and confirm that the effective
+master input directory resolves to `pipeline_inputs/raw_images/`.
+
+If Linux/WSL reports `Permission denied` after unzipping, some directories may
+be readable but not traversable. Directory traversal requires the execute/search
+permission bit. Repair only the input image tree with:
+
+```bash
+bash ./launchers/repair_input_permissions.sh ./pipeline_inputs/raw_images
+```
+
+This applies `u+rwx` to input directories and `u+r` to input files. It does not
+modify scripts, cache, or generated `pipeline_outputs/`.
 
 Using your own images and model:
 

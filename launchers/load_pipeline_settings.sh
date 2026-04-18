@@ -84,6 +84,58 @@ first_matching_file() {
   fi
 }
 
+count_raw_images() {
+  local dir="$1"
+  if [[ -d "$dir" ]]; then
+    find "$dir" -type f \( -iname "*.tif" -o -iname "*.tiff" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" \) \
+      ! -path "*/ilastik/*" \
+      ! -path "*/software_reference/*" \
+      ! -path "*/example_expected_outputs/*" \
+      ! -path "*/training_images_raw/*" \
+      ! -path "*/training_images_preprocessed/*" \
+      ! -iname "*_RGavg.*" \
+      ! -iname "*_mask.*" \
+      ! -iname "*_mask_renorm.*" \
+      -print | wc -l
+  else
+    printf "0"
+  fi
+}
+
+count_inaccessible_dirs() {
+  local dir="$1"
+  if [[ -d "$dir" ]]; then
+    find "$dir" -type d ! -readable -o -type d ! -executable 2>/dev/null | wc -l
+  else
+    printf "0"
+  fi
+}
+
+resolve_input_master_dir() {
+  local configured="$1"
+  local workspace="$2"
+  local candidate=""
+  local best="$configured"
+  local best_count=0
+  local candidate_count=0
+
+  best_count="$(count_raw_images "$best")"
+
+  for candidate in \
+    "${configured}/raw_images" \
+    "${workspace}/raw_images" \
+    "${workspace}"/*/raw_images; do
+    [[ -d "$candidate" ]] || continue
+    candidate_count="$(count_raw_images "$candidate")"
+    if [[ "$candidate_count" -gt "$best_count" ]]; then
+      best="$candidate"
+      best_count="$candidate_count"
+    fi
+  done
+
+  printf "%s" "$best"
+}
+
 print_input_setup_guidance() {
   cat >&2 <<'GUIDANCE'
 
@@ -97,6 +149,9 @@ Option 1 - use the published Zenodo dataset:
      pipeline_inputs/raw_images/       -> raw image root
      pipeline_inputs/metadata/         -> metadata fallback
      pipeline_inputs/ilastik/model/    -> ilastik .ilp fallback
+  4. If the image count is unexpectedly low after unzipping on Linux/WSL, check permissions.
+     Directories must have the execute/search bit. To repair only the selected input tree, run:
+     bash ./launchers/repair_input_permissions.sh ./pipeline_inputs/raw_images
 
 Option 2 - use your own compatible data:
   1. Put raw image folders under pipeline_inputs/ or set INPUT_MASTER_DIR in config/pipeline_settings.env.
@@ -117,9 +172,7 @@ PROJECT_ROOT="$(normalize_dir "${PROJECT_ROOT}")"
 OUTPUT_ROOT_DIR="$(normalize_dir "${OUTPUT_ROOT_DIR_NAME:-pipeline_outputs}")"
 INPUT_WORKSPACE_DIR="$(normalize_dir "${INPUT_WORKSPACE_DIR_NAME:-pipeline_inputs}")"
 INPUT_MASTER_DIR="$(normalize_dir "${INPUT_MASTER_DIR:-pipeline_inputs}")"
-if [[ "$INPUT_MASTER_DIR" == "$INPUT_WORKSPACE_DIR" && -d "${INPUT_WORKSPACE_DIR}/raw_images" ]]; then
-  INPUT_MASTER_DIR="${INPUT_WORKSPACE_DIR}/raw_images"
-fi
+INPUT_MASTER_DIR="$(resolve_input_master_dir "$INPUT_MASTER_DIR" "$INPUT_WORKSPACE_DIR")"
 PRE_RENAMED_DIR="${OUTPUT_ROOT_DIR}/${PRE_RENAMED_DIR_NAME}"
 IMAGE_INPUT_LIST="${OUTPUT_ROOT_DIR}/${IMAGE_INPUT_LIST_NAME}"
 OUT_CLEAR_BCGND_DIR="${OUTPUT_ROOT_DIR}/${OUT_CLEAR_BCGND_DIR_NAME}"

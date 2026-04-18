@@ -13,13 +13,45 @@ PATHS_FILE="${PIPELINE_PATHS_FILE:-}"
 
 mkdir -p "$BASE_DIR"
 
+check_input_permissions() {
+  local bad_dirs=""
+  local bad_files=""
+
+  bad_dirs="$(find "$SEARCH_ROOT" -type d ! -executable -print 2>/dev/null | head -20 || true)"
+  bad_files="$(find "$SEARCH_ROOT" -type f \( -iname "*.tif" -o -iname "*.tiff" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" \) ! -readable -print 2>/dev/null | head -20 || true)"
+
+  if [[ -n "$bad_dirs" || -n "$bad_files" ]]; then
+    echo "[ERROR] Input permission problem detected under: $SEARCH_ROOT" >&2
+    echo "[ERROR] Some folders/files cannot be traversed or read, so the pipeline may silently find only part of the image dataset." >&2
+    if [[ -n "$bad_dirs" ]]; then
+      echo "[ERROR] Example untraversable folders:" >&2
+      echo "$bad_dirs" >&2
+    fi
+    if [[ -n "$bad_files" ]]; then
+      echo "[ERROR] Example unreadable image files:" >&2
+      echo "$bad_files" >&2
+    fi
+    echo "[ERROR] In the browser app, click 'Repair Input Folder Permissions'." >&2
+    echo "[ERROR] Terminal fallback: bash ./launchers/repair_input_permissions.sh '$SEARCH_ROOT'" >&2
+    exit 1
+  fi
+}
+
+check_input_permissions
+
 iter_source_files() {
   if [[ -n "$PATHS_FILE" && -f "$PATHS_FILE" ]]; then
     cat "$PATHS_FILE"
   else
     find "$SEARCH_ROOT" \
       \( -path "$BASE_DIR_CANON" -o -path "$OUTPUT_ROOT_CANON" \) -prune -o \
-      -type f -name "*.tif" -print
+      \( -path "*/ilastik/*" -o -path "*/software_reference/*" -o -path "*/example_expected_outputs/*" -o -path "*/training_images_raw/*" -o -path "*/training_images_preprocessed/*" \) -prune -o \
+      -type f \
+      \( -iname "*.tif" -o -iname "*.tiff" -o -iname "*.png" -o -iname "*.jpg" -o -iname "*.jpeg" \) \
+      ! -iname "*_RGavg.*" \
+      ! -iname "*_mask.*" \
+      ! -iname "*_mask_renorm.*" \
+      -print
   fi
 }
 

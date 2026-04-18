@@ -46,14 +46,33 @@ first_matching_file <- function(dirs, pattern) {
   ""
 }
 
+count_raw_image_files <- function(dir) {
+  if (!dir.exists(dir)) return(0L)
+  files <- list.files(dir, pattern = "\\.(tif|tiff|png|jpg|jpeg)$", recursive = TRUE, full.names = TRUE, ignore.case = TRUE)
+  if (!length(files)) return(0L)
+  files <- files[!grepl("/(ilastik|software_reference|example_expected_outputs|training_images_raw|training_images_preprocessed)/", normalizePath(files, winslash = "/", mustWork = FALSE), ignore.case = TRUE)]
+  files <- files[!grepl("(_RGavg|_mask|_mask_renorm)\\.", basename(files), ignore.case = TRUE)]
+  length(files)
+}
+
+resolve_raw_images_root <- function(configured, input_workspace) {
+  candidates <- unique(c(
+    configured,
+    file.path(configured, "raw_images"),
+    file.path(input_workspace, "raw_images"),
+    list.files(input_workspace, pattern = "^raw_images$", recursive = TRUE, full.names = TRUE, ignore.case = FALSE)
+  ))
+  candidates <- candidates[dir.exists(candidates)]
+  if (!length(candidates)) return(configured)
+  counts <- vapply(candidates, count_raw_image_files, integer(1))
+  if (max(counts, na.rm = TRUE) <= 0) return(configured)
+  normalizePath(candidates[[which.max(counts)]], winslash = "/", mustWork = FALSE)
+}
+
 resolve_zenodo_input_root <- function(project_root, settings) {
   configured <- normalize_pipeline_path(project_root, settings$INPUT_MASTER_DIR, "pipeline_inputs")
   input_workspace <- normalize_pipeline_path(project_root, settings$INPUT_WORKSPACE_DIR_NAME, "pipeline_inputs")
-  direct_unzip_raw <- file.path(input_workspace, "raw_images")
-  if (dir.exists(direct_unzip_raw) && identical(normalizePath(configured, winslash = "/", mustWork = FALSE), normalizePath(input_workspace, winslash = "/", mustWork = FALSE))) {
-    return(normalizePath(direct_unzip_raw, winslash = "/", mustWork = FALSE))
-  }
-  configured
+  resolve_raw_images_root(configured, input_workspace)
 }
 
 resolve_zenodo_metadata_file <- function(project_root, settings) {
