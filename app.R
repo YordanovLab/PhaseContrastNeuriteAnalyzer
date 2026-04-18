@@ -1407,7 +1407,8 @@ fiji_expected_names <- function(image_list_path) {
   if (!length(image_paths)) return(character())
   vapply(image_paths, function(x) {
     nm <- basename(x)
-    sub("\\.tif$", "_RGavg.tif", nm, ignore.case = TRUE)
+    stem <- sub("\\.(tif|tiff|jpg|jpeg|png)$", "", nm, ignore.case = TRUE)
+    paste0(stem, "_RGavg.tif")
   }, character(1), USE.NAMES = FALSE)
 }
 
