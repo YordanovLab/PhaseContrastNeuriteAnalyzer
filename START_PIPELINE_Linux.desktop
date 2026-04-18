@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Neurite Analysis in Phase Contrast Images
+Comment=Start the browser app for neurite analysis
+Exec=sh -c 'ROOT="$(dirname "$1")"; cd "$ROOT" && ./launchers/start_pipeline.sh' dummy %k
+Terminal=true
+Categories=Science;Utility;
