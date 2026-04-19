@@ -6177,8 +6177,6 @@ server <- function(input, output, session) {
     updateSelectInput(session, "seg_neurites_value", selected = s$SEG_LABEL_NEURITES %||% "3")
     updateSelectInput(session, "seg_cell_bodies_value", selected = s$SEG_LABEL_CELL_BODIES %||% "1")
     updateSelectInput(session, "seg_background_value", selected = s$SEG_LABEL_BACKGROUND %||% "255")
-    freezeReactiveValue(input, "optimization_scoring_mode_inline")
-    updateSelectInput(session, "optimization_scoring_mode_inline", selected = s$OPTIMIZATION_SCORING_MODE %||% "continuity_aware")
   })
 
   observeEvent(input$save_settings_btn, {
@@ -6306,9 +6304,14 @@ server <- function(input, output, session) {
     if (!identical(current$OPTIMIZATION_SCORING_MODE %||% "continuity_aware", selected_mode)) {
       write_settings_file(settings_path, modifyList(current, list(OPTIMIZATION_SCORING_MODE = selected_mode)))
       if (isTRUE(announce)) append_log("Optimization scoring mode:", selected_mode)
+      tick(tick() + 1L)
     }
     invisible(selected_mode)
   }
+
+  observeEvent(input$optimization_scoring_mode_inline, {
+    persist_optimization_scoring_mode(input$optimization_scoring_mode_inline, announce = FALSE)
+  }, ignoreInit = TRUE)
 
   output$segmentation_label_mask_selector_ui <- renderUI({
     files <- segmentation_mask_files(settings())
