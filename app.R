@@ -4102,6 +4102,40 @@ server <- function(input, output, session) {
     out[order(out$created_at, decreasing = TRUE), , drop = FALSE]
   }
 
+  publication_enrich_table_for_export <- function(df, table_id, table_label) {
+    if (!is.data.frame(df) || !nrow(df)) return(df)
+    out <- df
+    label_text <- publication_metadata_value(table_label %||% table_id, max_chars = 2000)
+    subset_text <- ""
+    if (grepl("^(generalization_|dimred_|contrast_|covariate_|ancova_|tab4_)", table_id %||% "", ignore.case = TRUE)) {
+      subset_text <- publication_metadata_value(paste(tab4_active_filter_summary_lines(), collapse = " || "), max_chars = 4000)
+    }
+    if (identical(table_id, "generalization_group_stats_table")) {
+      stat_text <- publication_metadata_value(generalization_group_stats_table_title(), max_chars = 2000)
+      out <- cbind(
+        Statistical_test_summary = rep(stat_text, nrow(out)),
+        Applied_subset_rules = rep(subset_text, nrow(out)),
+        Saved_table_title = rep(label_text, nrow(out)),
+        out,
+        stringsAsFactors = FALSE
+      )
+    } else if (nzchar(subset_text)) {
+      out <- cbind(
+        Applied_subset_rules = rep(subset_text, nrow(out)),
+        Saved_table_title = rep(label_text, nrow(out)),
+        out,
+        stringsAsFactors = FALSE
+      )
+    } else {
+      out <- cbind(
+        Saved_table_title = rep(label_text, nrow(out)),
+        out,
+        stringsAsFactors = FALSE
+      )
+    }
+    out
+  }
+
   save_publication_table_candidate <- function(table_id, table_label, df) {
     if (!is.data.frame(df) || !nrow(df)) {
       showNotification("This table has no rows to save as a publication candidate.", type = "warning", duration = 8)
@@ -4112,12 +4146,35 @@ server <- function(input, output, session) {
     candidate_id <- paste0(format(Sys.time(), "%Y%m%d_%H%M%S"), "_", safe_label)
     candidate_dir <- file.path(publication_table_dir, candidate_id)
     dir.create(candidate_dir, recursive = TRUE, showWarnings = FALSE)
-    utils::write.csv(df, file.path(candidate_dir, "table.csv"), row.names = FALSE, na = "")
+    export_df <- publication_enrich_table_for_export(df, table_id, table_label)
+    utils::write.csv(export_df, file.path(candidate_dir, "table.csv"), row.names = FALSE, na = "")
     meta <- data.frame(
       key = c("table_id", "source_table_id", "table_label", "created_at", "rows", "columns", "app_project_root"),
-      value = c(candidate_id, table_id, table_label, format(Sys.time(), "%Y-%m-%d %H:%M:%S"), nrow(df), ncol(df), project_root),
+      value = c(candidate_id, table_id, table_label, format(Sys.time(), "%Y-%m-%d %H:%M:%S"), nrow(export_df), ncol(export_df), project_root),
       stringsAsFactors = FALSE
     )
+    if (identical(table_id, "generalization_group_stats_table")) {
+      meta <- rbind(
+        meta,
+        data.frame(
+          key = c("statistical_test_summary", "applied_subset_rules"),
+          value = c(
+            publication_metadata_value(generalization_group_stats_table_title(), max_chars = 2000),
+            publication_metadata_value(paste(tab4_active_filter_summary_lines(), collapse = " || "), max_chars = 4000)
+          ),
+          stringsAsFactors = FALSE
+        )
+      )
+    } else if (grepl("^(generalization_|dimred_|contrast_|covariate_|ancova_|tab4_)", table_id %||% "", ignore.case = TRUE)) {
+      meta <- rbind(
+        meta,
+        data.frame(
+          key = "applied_subset_rules",
+          value = publication_metadata_value(paste(tab4_active_filter_summary_lines(), collapse = " || "), max_chars = 4000),
+          stringsAsFactors = FALSE
+        )
+      )
+    }
     snapshot <- publication_snapshot_inputs()
     context <- publication_context_metadata(snapshot, table_control_id = table_id)
     write_key_value_metadata(file.path(candidate_dir, "table_metadata.csv"), meta, context)
@@ -4129,8 +4186,8 @@ server <- function(input, output, session) {
       object_label = table_label,
       metadata = meta,
       snapshot = snapshot,
-      rows = nrow(df),
-      columns = ncol(df)
+      rows = nrow(export_df),
+      columns = ncol(export_df)
     )
     publication_tick(publication_tick() + 1)
     showNotification(sprintf("Saved publication table candidate: %s", table_label), type = "message")
@@ -4908,6 +4965,12 @@ server <- function(input, output, session) {
     )
   }
 
+  resolve_filterable_table_title <- function(title) {
+    out <- if (is.function(title)) title() else title
+    out <- as.character(out %||% "")
+    if (!length(out) || !nzchar(out[[1]])) "table" else out[[1]]
+  }
+
   apply_table_value_filter <- function(id, df) {
     if (!is.data.frame(df) || !nrow(df)) return(df)
     col <- input[[paste0(id, "_filter_col")]] %||% ""
@@ -4979,13 +5042,13 @@ server <- function(input, output, session) {
       )
     })
     output[[paste0("download_", id, "_csv")]] <- downloadHandler(
-      filename = function() paste0(gsub("[^A-Za-z0-9._-]+", "_", title), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".csv"),
+      filename = function() paste0(gsub("[^A-Za-z0-9._-]+", "_", resolve_filterable_table_title(title)), "_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".csv"),
       content = function(file) {
         utils::write.csv(apply_table_value_filter(id, data_fun()), file, row.names = FALSE, na = "")
       }
     )
     observeEvent(input[[paste0("save_pub_table_", id)]], {
-      save_publication_table_candidate(id, title, apply_table_value_filter(id, data_fun()))
+      save_publication_table_candidate(id, resolve_filterable_table_title(title), apply_table_value_filter(id, data_fun()))
     }, ignoreInit = TRUE)
   }
 
@@ -9980,6 +10043,82 @@ server <- function(input, output, session) {
     df
   })
 
+  describe_tab4_single_filter <- function(df, col, numeric_range = NULL, keep_values = NULL, keep_numeric_values = NULL, numeric_min = NULL, numeric_max = NULL, exact_numeric_enabled = FALSE, exact_numeric_mode = "keep") {
+    if (!nrow(df) || !nzchar(col %||% "") || !col %in% names(df)) return("")
+    label <- plot_display_label(col, width = 40, multiline = FALSE)
+    if (vector_is_numeric_like(df[[col]])) {
+      bits <- character()
+      if (length(numeric_range) == 2 && all(is.finite(numeric_range))) {
+        bits <- c(bits, sprintf("range %.4g to %.4g", min(numeric_range), max(numeric_range)))
+      }
+      if (isTRUE(exact_numeric_enabled)) {
+        exact_numeric_mode <- exact_numeric_mode %||% "keep"
+        exact_vals <- suppressWarnings(as.numeric(keep_numeric_values))
+        exact_vals <- exact_vals[is.finite(exact_vals)]
+        if (!identical(exact_numeric_mode, "off") && length(exact_vals)) {
+          shown_vals <- paste(utils::head(sprintf("%.4g", sort(unique(exact_vals))), 8), collapse = ", ")
+          if (length(unique(exact_vals)) > 8) shown_vals <- paste0(shown_vals, ", ...")
+          bits <- c(bits, sprintf("%s exact values [%s]", if (identical(exact_numeric_mode, "exclude")) "excluding" else "keeping", shown_vals))
+        }
+      }
+      numeric_min <- suppressWarnings(as.numeric(numeric_min))
+      numeric_max <- suppressWarnings(as.numeric(numeric_max))
+      if (length(numeric_min) && length(numeric_max) && is.finite(numeric_min) && is.finite(numeric_max)) {
+        bits <- c(bits, sprintf("bounded from %.4g to %.4g", min(numeric_min, numeric_max), max(numeric_min, numeric_max)))
+      }
+      if (!length(bits)) return("")
+      return(sprintf("%s: %s", label, paste(bits, collapse = "; ")))
+    }
+    if (!length(keep_values)) return("")
+    vals <- unique(as.character(keep_values))
+    shown_vals <- paste(utils::head(vals, 8), collapse = ", ")
+    if (length(vals) > 8) shown_vals <- paste0(shown_vals, ", ...")
+    sprintf("%s: keeping [%s]", label, shown_vals)
+  }
+
+  tab4_active_filter_summary_lines <- reactive({
+    df <- tab4_source_table()
+    if (!nrow(df)) return("No saved tab-4 source table is available.")
+    lines <- character()
+    main_line <- describe_tab4_single_filter(
+      df,
+      input$tab4_filter_column %||% "",
+      input$tab4_filter_numeric_range,
+      input$tab4_filter_values,
+      input$tab4_filter_numeric_values,
+      input$tab4_filter_numeric_min,
+      input$tab4_filter_numeric_max,
+      tab4_exact_numeric_filter_enabled(df, input$tab4_filter_column %||% ""),
+      input$tab4_filter_exact_mode %||% tab4_default_exact_numeric_mode(df, input$tab4_filter_column %||% "")
+    )
+    if (nzchar(main_line)) lines <- c(lines, main_line)
+    for (i in tab4_additional_filter_indices) {
+      line_i <- describe_tab4_single_filter(
+        df,
+        input[[paste0("tab4_filter_column_", i)]] %||% "",
+        input[[paste0("tab4_filter_numeric_range_", i)]],
+        input[[paste0("tab4_filter_values_", i)]],
+        input[[paste0("tab4_filter_numeric_values_", i)]],
+        input[[paste0("tab4_filter_numeric_min_", i)]],
+        input[[paste0("tab4_filter_numeric_max_", i)]],
+        tab4_exact_numeric_filter_enabled(df, input[[paste0("tab4_filter_column_", i)]] %||% ""),
+        input[[paste0("tab4_filter_exact_mode_", i)]] %||% tab4_default_exact_numeric_mode(df, input[[paste0("tab4_filter_column_", i)]] %||% "")
+      )
+      if (nzchar(line_i)) lines <- c(lines, line_i)
+    }
+    if (".is_cutoff_training_image" %in% names(df) && !isTRUE(input$tab4_include_cutoff_training %||% TRUE)) {
+      lines <- c(lines, "Cutoff-optimization training images excluded.")
+    }
+    if (".is_ilastik_training_image" %in% names(df) && !isTRUE(input$tab4_include_ilastik_training %||% TRUE)) {
+      lines <- c(lines, "Ilastik-training images excluded.")
+    }
+    max_rows <- suppressWarnings(as.integer(input$tab4_max_rows %||% 0L))
+    if (is.finite(max_rows) && max_rows > 0) {
+      lines <- c(lines, sprintf("Random subsampling capped at %s row(s) with seed %s.", max_rows, suppressWarnings(as.integer(input$tab4_random_seed %||% 42L))))
+    }
+    if (!length(lines)) "No additional Tab 4 subset filters were applied beyond keeping the currently available analysis table." else lines
+  })
+
   output$tab4_filter_status_ui <- renderUI({
     full <- tab4_source_table()
     filtered <- tab4_filtered_table()
@@ -10313,6 +10452,274 @@ server <- function(input, output, session) {
     cols[vapply(df[cols], function(x) !is.numeric(x) || length(unique(x[!is.na(x)])) <= 30, logical(1))]
   })
 
+  choose_groupwise_control_level <- function(levels_vec) {
+    levels_vec <- as.character(levels_vec %||% character())
+    levels_vec <- levels_vec[nzchar(levels_vec)]
+    if (!length(levels_vec)) return("")
+    preferred <- grep("(^|[^A-Za-z])(control|ctrl|vehicle|untreated|none|baseline)([^A-Za-z]|$)", levels_vec, ignore.case = TRUE)
+    if (length(preferred)) return(levels_vec[[preferred[[1]]]])
+    levels_vec[[1]]
+  }
+
+  significance_stars <- function(p) {
+    if (!is.finite(p)) return("")
+    if (p < 0.001) return("***")
+    if (p < 0.01) return("**")
+    if (p < 0.05) return("*")
+    "ns"
+  }
+
+  selected_generalization_stats_tests <- function() {
+    tests <- input$generalization_stats_tests %||% c("welch", "kruskal")
+    tests <- intersect(tests, c("welch", "kruskal"))
+    if (!length(tests)) tests <- c("welch")
+    tests
+  }
+
+  generalization_group_plot_data <- reactive({
+    df <- tab4_filtered_table()
+    var <- input$generalization_plot_variable %||% ""
+    normalize_by <- input$generalization_plot_normalize_by %||% ""
+    group <- input$generalization_plot_group %||% ""
+    group2 <- input$generalization_plot_group2 %||% ""
+    color_by <- input$generalization_plot_color_by %||% "__group__"
+    if (!nrow(df) || !var %in% names(df) || !group %in% names(df)) {
+      return(list(ok = FALSE, message = "Select a saved/generalized table, variable, and grouping feature."))
+    }
+    df$.y <- suppressWarnings(as.numeric(df[[var]]))
+    y_label <- plot_display_label(var, width = 36)
+    plot_title_var <- plot_display_label(var, width = 60, multiline = FALSE)
+    if (nzchar(normalize_by) && normalize_by %in% names(df) && !identical(normalize_by, var)) {
+      denom <- suppressWarnings(as.numeric(df[[normalize_by]]))
+      invalid <- !is.finite(denom) | denom == 0
+      df$.y[invalid] <- NA_real_
+      df$.y[!invalid] <- df$.y[!invalid] / denom[!invalid]
+      y_label <- paste(plot_display_label(var, width = 28, multiline = FALSE), "/", plot_display_label(normalize_by, width = 28, multiline = FALSE))
+      plot_title_var <- paste(plot_display_label(var, width = 42, multiline = FALSE), "normalized by", plot_display_label(normalize_by, width = 42, multiline = FALSE))
+    }
+    grouping_cols <- c(group, if (nzchar(group2) && group2 %in% names(df)) group2 else character())
+    df$.group <- if (length(grouping_cols) > 1) {
+      ordered_interaction_factor(df, grouping_cols)
+    } else {
+      ordered_factor_for_plot(df[[group]])
+    }
+    df <- df[is.finite(df$.y) & !is.na(df$.group), , drop = FALSE]
+    if (!nrow(df)) {
+      return(list(ok = FALSE, message = "No finite rows are available after applying the current filters, variable choice, and optional normalization."))
+    }
+    facet_split <- build_generalization_facet_split(df)
+    apply_facets <- isTRUE(input$generalization_plot_apply_facets %||% FALSE) && isTRUE(facet_split$ok)
+    if (apply_facets) {
+      df$.facet <- facet_split$facet
+      df <- df[!is.na(df$.facet), , drop = FALSE]
+      if (!nrow(df)) {
+        return(list(ok = FALSE, message = "No rows remain after applying the selected facet split."))
+      }
+    } else {
+      df$.facet <- factor("All rows")
+    }
+    levels_x <- levels(droplevels(df$.group))
+    if (!length(levels_x)) levels_x <- unique(as.character(df$.group))
+    display_levels_x <- plot_display_labels(gsub(" \\| ", " | ", levels_x), width = 22)
+    color_source <- if (identical(color_by, "__group__") || !color_by %in% names(df)) group else color_by
+    color_source_label <- plot_display_label(color_source, width = 28, multiline = FALSE)
+    color_is_numeric <- color_source %in% names(df) && vector_is_numeric_like(df[[color_source]])
+    list(
+      ok = TRUE,
+      df = df,
+      var = var,
+      normalize_by = normalize_by,
+      group = group,
+      group2 = group2,
+      color_by = color_by,
+      y_label = y_label,
+      plot_title_var = plot_title_var,
+      facet_split = facet_split,
+      apply_facets = apply_facets,
+      levels_x = levels_x,
+      display_levels_x = display_levels_x,
+      color_source = color_source,
+      color_source_label = color_source_label,
+      color_is_numeric = color_is_numeric
+    )
+  })
+
+  generalization_group_stats_table_title <- reactive({
+    prep <- generalization_group_plot_data()
+    if (!isTRUE(prep$ok)) return("Grouped plot statistics")
+    mode <- input$generalization_stats_mode %||% "summary"
+    alpha <- suppressWarnings(as.numeric(input$generalization_stats_alpha %||% 0.05))
+    if (!is.finite(alpha) || alpha <= 0 || alpha >= 1) alpha <- 0.05
+    tests <- selected_generalization_stats_tests()
+    test_text <- paste(c(
+      if ("welch" %in% tests) "Welch ANOVA + Holm-adjusted Welch t-tests",
+      if ("kruskal" %in% tests) "Kruskal-Wallis + Holm-adjusted pairwise Wilcoxon tests"
+    ), collapse = " and ")
+    facet_note <- if (isTRUE(prep$apply_facets) && isTRUE(prep$facet_split$ok)) {
+      paste0(" (computed separately within facets of ", plot_display_label(prep$facet_split$variable, width = 42, multiline = FALSE), ")")
+    } else {
+      ""
+    }
+    if (identical(mode, "pairwise")) {
+      paste0(test_text, " for ", prep$plot_title_var, " by ", plot_display_label(prep$group, width = 42, multiline = FALSE), " (alpha = ", sprintf("%.3g", alpha), ")", facet_note)
+    } else if (identical(mode, "control")) {
+      control_level <- input$generalization_stats_control_group %||% choose_groupwise_control_level(prep$levels_x)
+      paste0(test_text, " versus control ", shQuote(control_level), " for ", prep$plot_title_var, " by ", plot_display_label(prep$group, width = 42, multiline = FALSE), " (alpha = ", sprintf("%.3g", alpha), ")", facet_note)
+    } else {
+      paste0("Descriptive grouped summary for ", prep$plot_title_var, " by ", plot_display_label(prep$group, width = 42, multiline = FALSE), " (reference alpha = ", sprintf("%.3g", alpha), ")", facet_note)
+    }
+  })
+
+  generalization_group_stats_table_data <- reactive({
+    prep <- generalization_group_plot_data()
+    if (!isTRUE(prep$ok)) return(data.frame(Message = prep$message, stringsAsFactors = FALSE))
+    df <- prep$df
+    mode <- input$generalization_stats_mode %||% "summary"
+    control_level <- input$generalization_stats_control_group %||% choose_groupwise_control_level(prep$levels_x)
+    alpha <- suppressWarnings(as.numeric(input$generalization_stats_alpha %||% 0.05))
+    if (!is.finite(alpha) || alpha <= 0 || alpha >= 1) alpha <- 0.05
+    tests <- selected_generalization_stats_tests()
+    mean_col <- paste0("Mean (", prep$plot_title_var, ")")
+    sd_col <- paste0("SD (", prep$plot_title_var, ")")
+    median_col <- paste0("Median (", prep$plot_title_var, ")")
+    iqr_col <- paste0("IQR range (Q1 to Q3) (", prep$plot_title_var, ")")
+    format_p_value <- function(x) {
+      if (!is.finite(x)) return(NA_character_)
+      if (x < 1e-4) return("<0.0001")
+      sprintf("%.4g", x)
+    }
+    summarize_panel <- function(panel_df, facet_label) {
+      group_levels <- levels(droplevels(panel_df$.group))
+      if (!length(group_levels)) group_levels <- unique(as.character(panel_df$.group))
+      summary_rows <- lapply(group_levels, function(g) {
+        vals <- panel_df$.y[as.character(panel_df$.group) == g]
+        q <- stats::quantile(vals, probs = c(0.25, 0.75), na.rm = TRUE, names = FALSE, type = 7)
+        q1 <- if (length(q) >= 1 && is.finite(q[[1]])) sprintf("%.4f", q[[1]]) else NA_character_
+        q3 <- if (length(q) >= 2 && is.finite(q[[2]])) sprintf("%.4f", q[[2]]) else NA_character_
+        data.frame(
+          Facet = facet_label,
+          Group = g,
+          N = sum(is.finite(vals)),
+          Mean = mean(vals, na.rm = TRUE),
+          SD = stats::sd(vals, na.rm = TRUE),
+          Median = stats::median(vals, na.rm = TRUE),
+          IQR = if (!is.na(q1) && !is.na(q3)) paste(q1, "to", q3) else NA_character_,
+          stringsAsFactors = FALSE
+        )
+      })
+      out <- do.call(rbind, summary_rows)
+      out$Mean <- round(out$Mean, 4)
+      out$SD <- round(out$SD, 4)
+      out$Median <- round(out$Median, 4)
+      if (identical(mode, "summary")) {
+        out$Alpha_level <- sprintf("%.3g", alpha)
+        out$Selected_test_families <- paste(c(
+          if ("welch" %in% tests) "Welch",
+          if ("kruskal" %in% tests) "Kruskal-Wallis"
+        ), collapse = " | ")
+        out$Significance_star_summary <- "Descriptive only"
+        return(out)
+      }
+      out$Alpha_level <- sprintf("%.3g", alpha)
+      out$Selected_test_families <- paste(c(
+        if ("welch" %in% tests) "Welch",
+        if ("kruskal" %in% tests) "Kruskal-Wallis"
+      ), collapse = " | ")
+      fill_test_family <- function(prefix, omnibus_p, pairwise_df) {
+        comparison_col <- paste0(prefix, "_comparison")
+        p_col <- paste0(prefix, "_adjusted_p_value")
+        omnibus_col <- paste0(prefix, "_omnibus_p_value")
+        star_col <- paste0(prefix, "_star_summary")
+        out[[comparison_col]] <<- ""
+        out[[p_col]] <<- ""
+        out[[omnibus_col]] <<- format_p_value(omnibus_p)
+        out[[star_col]] <<- ""
+        if (identical(mode, "control") && !control_level %in% group_levels) {
+          out[[comparison_col]] <<- "Selected control group is not present after the current filtering."
+          out[[p_col]] <<- NA_character_
+          return(invisible(NULL))
+        }
+        if (identical(mode, "control") && nrow(pairwise_df)) {
+          pairwise_df <- pairwise_df[pairwise_df$Group_A == control_level | pairwise_df$Group_B == control_level, , drop = FALSE]
+        }
+        for (i in seq_len(nrow(out))) {
+          g <- out$Group[[i]]
+          if (!nrow(pairwise_df)) {
+            out[[comparison_col]][[i]] <<- if (identical(mode, "control") && identical(g, control_level)) "Reference group" else "Not enough groups/replicates for post hoc comparison."
+            out[[p_col]][[i]] <<- NA_character_
+            out[[star_col]][[i]] <<- ""
+            next
+          }
+          hits <- pairwise_df[pairwise_df$Group_A == g | pairwise_df$Group_B == g, , drop = FALSE]
+          if (!nrow(hits)) {
+            out[[comparison_col]][[i]] <<- if (identical(mode, "control") && identical(g, control_level)) "Reference group" else "No eligible comparison"
+            out[[p_col]][[i]] <<- NA_character_
+            out[[star_col]][[i]] <<- ""
+            next
+          }
+          other_groups <- ifelse(hits$Group_A == g, hits$Group_B, hits$Group_A)
+          out[[comparison_col]][[i]] <<- paste(sprintf("vs %s", other_groups), collapse = "; ")
+          out[[p_col]][[i]] <<- paste(vapply(hits$Adjusted_P_value, format_p_value, character(1)), collapse = "; ")
+          star_parts <- ifelse(
+            hits$Adjusted_P_value < alpha,
+            paste0(other_groups, " ", vapply(hits$Adjusted_P_value, significance_stars, character(1))),
+            paste0(other_groups, " ns")
+          )
+          out[[star_col]][[i]] <<- paste(star_parts, collapse = "; ")
+        }
+        invisible(NULL)
+      }
+      build_pairwise_df <- function(pairwise_mat) {
+        pairwise_rows <- list()
+        if (!is.null(pairwise_mat) && nrow(pairwise_mat) && ncol(pairwise_mat)) {
+          idx <- 1L
+          for (r in rownames(pairwise_mat)) {
+            for (c in colnames(pairwise_mat)) {
+              p_val <- suppressWarnings(as.numeric(pairwise_mat[r, c]))
+              if (is.finite(p_val)) {
+                pairwise_rows[[idx]] <- data.frame(Group_A = c, Group_B = r, Adjusted_P_value = p_val, stringsAsFactors = FALSE)
+                idx <- idx + 1L
+              }
+            }
+          }
+        }
+        if (length(pairwise_rows)) do.call(rbind, pairwise_rows) else data.frame()
+      }
+      if ("welch" %in% tests) {
+        welch_omnibus_p <- tryCatch(stats::oneway.test(.y ~ .group, data = panel_df)$p.value, error = function(e) NA_real_)
+        welch_pairwise_mat <- tryCatch(
+          stats::pairwise.t.test(panel_df$.y, panel_df$.group, p.adjust.method = "holm", pool.sd = FALSE)$p.value,
+          error = function(e) NULL
+        )
+        fill_test_family("Welch", welch_omnibus_p, build_pairwise_df(welch_pairwise_mat))
+      }
+      if ("kruskal" %in% tests) {
+        kruskal_omnibus_p <- tryCatch(stats::kruskal.test(.y ~ .group, data = panel_df)$p.value, error = function(e) NA_real_)
+        kruskal_pairwise_mat <- tryCatch(
+          stats::pairwise.wilcox.test(panel_df$.y, panel_df$.group, p.adjust.method = "holm", exact = FALSE)$p.value,
+          error = function(e) NULL
+        )
+        fill_test_family("Kruskal", kruskal_omnibus_p, build_pairwise_df(kruskal_pairwise_mat))
+      }
+      out
+    }
+    facet_levels <- levels(droplevels(df$.facet))
+    if (!length(facet_levels)) facet_levels <- unique(as.character(df$.facet))
+    tables <- lapply(facet_levels, function(facet_label) {
+      panel_df <- df[as.character(df$.facet) == facet_label, , drop = FALSE]
+      if (!nrow(panel_df)) return(NULL)
+      summarize_panel(panel_df, facet_label)
+    })
+    out <- do.call(rbind, Filter(Negate(is.null), tables))
+    if (!nrow(out)) return(data.frame(Message = "No grouped statistics are available for the current selection.", stringsAsFactors = FALSE))
+    if (!isTRUE(prep$apply_facets)) out$Facet <- NULL
+    names(out)[names(out) == "Mean"] <- mean_col
+    names(out)[names(out) == "SD"] <- sd_col
+    names(out)[names(out) == "Median"] <- median_col
+    names(out)[names(out) == "IQR"] <- iqr_col
+    out
+  })
+
   output$generalization_plot_controls_ui <- renderUI({
     nums <- generalized_numeric_columns()
     groups <- generalized_group_columns()
@@ -10333,6 +10740,18 @@ server <- function(input, output, session) {
     selected_facet <- input$generalization_plot_facet_by %||% ""
     if (!selected_facet %in% c("", names(df))) selected_facet <- ""
     facet_is_numeric <- nzchar(selected_facet) && selected_facet %in% names(df) && vector_is_numeric_like(df[[selected_facet]])
+    stats_mode <- input$generalization_stats_mode %||% "control"
+    if (!stats_mode %in% c("summary", "pairwise", "control")) stats_mode <- "control"
+    stats_alpha <- suppressWarnings(as.numeric(input$generalization_stats_alpha %||% 0.05))
+    if (!is.finite(stats_alpha) || stats_alpha <= 0 || stats_alpha >= 1) stats_alpha <- 0.05
+    stats_tests <- input$generalization_stats_tests %||% c("welch", "kruskal")
+    stats_tests <- intersect(stats_tests, c("welch", "kruskal"))
+    if (!length(stats_tests)) stats_tests <- c("welch")
+    prep <- generalization_group_plot_data()
+    control_levels <- if (isTRUE(prep$ok) && length(prep$levels_x)) prep$levels_x else character()
+    if (!length(control_levels)) control_levels <- c("No eligible plotted groups" = "")
+    selected_control <- input$generalization_stats_control_group %||% choose_groupwise_control_level(control_levels)
+    if (!selected_control %in% control_levels) selected_control <- choose_groupwise_control_level(control_levels)
     facet_value_ui <- NULL
     if (nzchar(selected_facet) && selected_facet %in% names(df) && !facet_is_numeric) {
       facet_values <- ordered_unique_values(df[[selected_facet]])
@@ -10387,6 +10806,41 @@ server <- function(input, output, session) {
         "generalization_plot_apply_facets",
         "Apply these split rules as vertical stacked facets",
         value = isTRUE(input$generalization_plot_apply_facets %||% FALSE)
+      ),
+      tags$hr(),
+      tags$h5("Statistics table for the grouped plot"),
+      radioButtons(
+        "generalization_stats_mode",
+        "Comparison mode",
+        choices = c(
+          "Summary only (group N, mean, SD)" = "summary",
+          "All groups versus all others" = "pairwise",
+          "Every group versus one selected control" = "control"
+        ),
+        selected = stats_mode
+      ),
+      numericInput(
+        "generalization_stats_alpha",
+        "Alpha level for significance calls",
+        value = stats_alpha,
+        min = 0.0001,
+        max = 0.5,
+        step = 0.005
+      ),
+      checkboxGroupInput(
+        "generalization_stats_tests",
+        "Test families to include as columns",
+        choices = c(
+          "Welch ANOVA + Welch t-test post hoc (mean-based, unequal variances allowed)" = "welch",
+          "Kruskal-Wallis + Wilcoxon post hoc (rank-based, more robust to skew/outliers)" = "kruskal"
+        ),
+        selected = stats_tests
+      ),
+      if (identical(stats_mode, "control")) selectInput(
+        "generalization_stats_control_group",
+        "Control/reference group",
+        choices = control_levels,
+        selected = selected_control
       )
     )
   })
@@ -10451,52 +10905,21 @@ server <- function(input, output, session) {
 
   output$generalization_grouped_plot <- renderPlot({
     on.exit(remember_plot("generalization_grouped_plot"), add = TRUE)
-    df <- tab4_filtered_table()
-    var <- input$generalization_plot_variable %||% ""
-    normalize_by <- input$generalization_plot_normalize_by %||% ""
-    group <- input$generalization_plot_group %||% ""
-    group2 <- input$generalization_plot_group2 %||% ""
-    color_by <- input$generalization_plot_color_by %||% "__group__"
-    if (!nrow(df) || !var %in% names(df) || !group %in% names(df)) {
-      plot.new(); text(0.5, 0.5, "Select a saved/generalized table, variable, and grouping feature."); return()
+    prep <- generalization_group_plot_data()
+    if (!isTRUE(prep$ok)) {
+      plot.new(); text(0.5, 0.5, prep$message %||% "Grouped plot is not ready."); return()
     }
-    df$.y <- suppressWarnings(as.numeric(df[[var]]))
-    y_label <- plot_display_label(var, width = 36)
-    plot_title_var <- plot_display_label(var, width = 60, multiline = FALSE)
-    if (nzchar(normalize_by) && normalize_by %in% names(df) && !identical(normalize_by, var)) {
-      denom <- suppressWarnings(as.numeric(df[[normalize_by]]))
-      invalid <- !is.finite(denom) | denom == 0
-      df$.y[invalid] <- NA_real_
-      df$.y[!invalid] <- df$.y[!invalid] / denom[!invalid]
-      y_label <- paste(plot_display_label(var, width = 28, multiline = FALSE), "/", plot_display_label(normalize_by, width = 28, multiline = FALSE))
-      plot_title_var <- paste(plot_display_label(var, width = 42, multiline = FALSE), "normalized by", plot_display_label(normalize_by, width = 42, multiline = FALSE))
-    }
-    grouping_cols <- c(group, if (nzchar(group2) && group2 %in% names(df)) group2 else character())
-    df$.group <- if (length(grouping_cols) > 1) {
-      ordered_interaction_factor(df, grouping_cols)
-    } else {
-      ordered_factor_for_plot(df[[group]])
-    }
-    df <- df[is.finite(df$.y) & !is.na(df$.group), , drop = FALSE]
-    if (!nrow(df)) {
-      plot.new(); text(0.5, 0.5, "No finite rows available for this grouped plot."); return()
-    }
-    facet_split <- build_generalization_facet_split(df)
-    apply_facets <- isTRUE(input$generalization_plot_apply_facets %||% FALSE) && isTRUE(facet_split$ok)
-    if (apply_facets) {
-      df$.facet <- facet_split$facet
-      df <- df[!is.na(df$.facet), , drop = FALSE]
-      if (!nrow(df)) {
-        plot.new(); text(0.5, 0.5, "No rows remain after applying the selected facet split."); return()
-      }
-    } else {
-      df$.facet <- factor("All rows")
-    }
-    levels_x <- levels(df$.group)
-    display_levels_x <- plot_display_labels(gsub(" \\| ", " | ", levels_x), width = 22)
-    color_source <- if (identical(color_by, "__group__") || !color_by %in% names(df)) group else color_by
-    color_source_label <- plot_display_label(color_source, width = 28, multiline = FALSE)
-    color_is_numeric <- color_source %in% names(df) && vector_is_numeric_like(df[[color_source]])
+    df <- prep$df
+    y_label <- prep$y_label
+    plot_title_var <- prep$plot_title_var
+    group <- prep$group
+    facet_split <- prep$facet_split
+    apply_facets <- prep$apply_facets
+    levels_x <- prep$levels_x
+    display_levels_x <- prep$display_levels_x
+    color_source <- prep$color_source
+    color_source_label <- prep$color_source_label
+    color_is_numeric <- prep$color_is_numeric
     facet_levels <- levels(droplevels(df$.facet))
     if (!length(facet_levels)) facet_levels <- unique(as.character(df$.facet))
     n_panels <- length(facet_levels)
@@ -10587,6 +11010,90 @@ server <- function(input, output, session) {
     if (!nzchar(input$generalization_plot_facet_by %||% "")) return(data.frame(Message = "No secondary faceting variable selected."))
     if (!isTRUE(split$ok)) return(data.frame(Message = split$message))
     apply_table_value_filter("generalization_facet_group_sizes", split$counts)
+  }, striped = TRUE, bordered = TRUE, spacing = "xs")
+
+  output$generalization_group_stats_info_ui <- renderUI({
+    prep <- generalization_group_plot_data()
+    title_text <- generalization_group_stats_table_title()
+    if (!isTRUE(prep$ok)) {
+      return(tags$div(
+        class = "step-summary-box step-summary-missing",
+        tags$strong("Grouped-plot statistics"),
+        tags$p(prep$message %||% "Grouped-plot statistics are not ready yet.")
+      ))
+    }
+    full_n <- tryCatch(nrow(tab4_source_table()), error = function(e) 0L)
+    filtered_n <- tryCatch(nrow(tab4_filtered_table()), error = function(e) 0L)
+    unique_images <- tryCatch({
+      d <- tab4_filtered_table()
+      if (!nrow(d) || !"image_name" %in% names(d)) 0L else length(unique(d$image_name))
+    }, error = function(e) 0L)
+    mode <- input$generalization_stats_mode %||% "summary"
+    alpha <- suppressWarnings(as.numeric(input$generalization_stats_alpha %||% 0.05))
+    if (!is.finite(alpha) || alpha <= 0 || alpha >= 1) alpha <- 0.05
+    tests <- selected_generalization_stats_tests()
+    group_df <- prep$df
+    skew_check <- tryCatch({
+      split_vals <- split(group_df$.y, as.character(group_df$.group))
+      stats <- lapply(split_vals, function(v) {
+        v <- v[is.finite(v)]
+        if (length(v) < 5) return(c(n = length(v), mean = NA_real_, median = NA_real_, sd = NA_real_))
+        c(n = length(v), mean = mean(v), median = stats::median(v), sd = stats::sd(v))
+      })
+      stat_df <- as.data.frame(do.call(rbind, stats), stringsAsFactors = FALSE)
+      if (!nrow(stat_df)) FALSE else any(
+        is.finite(stat_df$mean) &
+        is.finite(stat_df$median) &
+        is.finite(stat_df$sd) &
+        stat_df$median > 0 &
+        ((stat_df$mean / stat_df$median) > 1.25 | (stat_df$sd / stat_df$mean) > 0.9),
+        na.rm = TRUE
+      )
+    }, error = function(e) FALSE)
+    measure_text <- if (nzchar(prep$normalize_by %||% "")) {
+      sprintf("The mean, SD, median, and IQR columns refer to the currently displayed plotted value: %s divided by %s.", plot_display_label(prep$var, width = 42, multiline = FALSE), plot_display_label(prep$normalize_by, width = 42, multiline = FALSE))
+    } else {
+      sprintf("The mean, SD, median, and IQR columns refer to the currently displayed plotted value: %s.", plot_display_label(prep$var, width = 52, multiline = FALSE))
+    }
+    explanation <- if (identical(mode, "summary")) {
+      "This mode is descriptive only: it summarizes the currently plotted subset by group using N, mean, SD, median, and IQR, without hypothesis testing. Switch to one of the comparison modes if you want multiplicity-aware p-values directly below the grouped plot."
+    } else {
+      paste(
+        c(
+          if ("welch" %in% tests) "Welch ANOVA is a mean-based omnibus test that tolerates unequal variances better than classical one-way ANOVA. Its post hoc columns use Holm-adjusted Welch t-tests to compare groups while controlling the family-wise error rate.",
+          if ("kruskal" %in% tests) "Kruskal-Wallis is a rank-based omnibus test that is less sensitive to skew and outliers than mean-based tests. Its post hoc columns use Holm-adjusted pairwise Wilcoxon rank-sum tests, which compare the rank distributions between groups rather than the means themselves."
+        ),
+        collapse = " "
+      )
+    }
+    interpretation <- if (identical(mode, "summary")) {
+      "Interpretation: compare the group means and SDs visually and use them as context for the grouped plot. No inferential p-value is being claimed in this mode."
+    } else {
+      if (identical(mode, "control")) {
+        "Interpretation: within each selected test family, the omnibus p-value asks whether any grouped difference is present overall, while the adjusted post hoc p-values tell you whether that row’s group differs from the chosen control after multiple-comparison correction. Compare Welch and Kruskal columns side by side: agreement strengthens confidence, while disagreement suggests that skew, outliers, or the distinction between mean-based and rank-based questions may matter."
+      } else {
+        "Interpretation: within each selected test family, the omnibus p-value asks whether any grouped difference is present overall, while the adjusted post hoc p-values summarize the row’s pairwise comparisons after multiple-comparison correction. Compare Welch and Kruskal columns side by side: agreement strengthens confidence, while disagreement suggests that skew, outliers, or the distinction between mean-based and rank-based questions may matter."
+      }
+    }
+    filter_lines <- tab4_active_filter_summary_lines()
+    tags$div(
+      class = "step-summary-box step-summary-neutral",
+      tags$strong(title_text),
+      tags$p(measure_text),
+      tags$p(sprintf("Current subset summary: %s of %s tab-4 row(s) remain after filtering, representing %s unique image(s).", filtered_n, full_n, unique_images)),
+      tags$p(sprintf("Alpha level used for significance calls and star summaries: %s. The star shorthand follows the adjusted post hoc p-values: * < 0.05, ** < 0.01, *** < 0.001, and ns = not significant.", sprintf("%.3g", alpha))),
+      tags$p(sprintf("Selected test families currently shown as columns: %s.", paste(c(if ("welch" %in% tests) "Welch mean-based inference", if ("kruskal" %in% tests) "Kruskal rank-based inference"), collapse = " and "))),
+      if (isTRUE(skew_check)) tags$p(class = "warning-text", "Distribution check: at least one displayed group looks strongly right-skewed based on mean-to-median and SD-to-mean heuristics. The added median and IQR columns are therefore especially important. Welch ANOVA and Welch t-tests are often reasonably robust with group sizes in the 10-40 range, but for heavily skewed positive data they should be interpreted as approximate mean-based tests rather than the only possible analysis."),
+      tags$p(tags$strong("Applied subset rules:")),
+      tags$ul(lapply(filter_lines, tags$li)),
+      tags$p(tags$strong("How the statistical test works: "), explanation),
+      tags$p(tags$strong("How to interpret it: "), interpretation),
+      tags$p("This table follows the same current tab-4 filters, selected outcome, normalization rule, grouping rule, and optional facet split as the grouped plot above. For covariate-adjusted inference, continue to tab 4.5.")
+    )
+  })
+
+  output$generalization_group_stats_table <- renderTable({
+    apply_table_value_filter("generalization_group_stats_table", generalization_group_stats_table_data())
   }, striped = TRUE, bordered = TRUE, spacing = "xs")
 
   output$ancova_controls_ui <- renderUI({
@@ -11540,6 +12047,7 @@ server <- function(input, output, session) {
     if (!isTRUE(split$ok)) return(data.frame(Message = split$message))
     split$counts
   }, "facet_group_sizes")
+  install_filterable_table("generalization_group_stats_table", generalization_group_stats_table_data, function() generalization_group_stats_table_title())
   install_filterable_table("tab4_training_role_counts_table", function() {
     df <- tab4_source_table()
     if (!nrow(df) || !".training_image_role" %in% names(df)) return(data.frame(Message = "No tab-4 analysis table is available yet."))
@@ -11789,6 +12297,17 @@ server <- function(input, output, session) {
             fluidRow(
               column(4, div(class = "manual-panel", uiOutput("generalization_plot_controls_ui"))),
               column(8, div(class = "manual-panel", plotOutput("generalization_grouped_plot", height = "520px"), downloadButton("download_generalization_grouped_plot", "Download High-Quality PNG"), actionButton("save_pub_generalization_grouped_plot", "Save as Publication Candidate", class = "btn btn-default")))
+            ),
+            fluidRow(
+              column(
+                12,
+                div(
+                  class = "manual-panel table-wrap-panel",
+                  uiOutput("generalization_group_stats_info_ui"),
+                  filterable_table_controls("generalization_group_stats_table"),
+                  tableOutput("generalization_group_stats_table")
+                )
+              )
             ),
             fluidRow(
               column(
