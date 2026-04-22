@@ -4539,6 +4539,55 @@ server <- function(input, output, session) {
     if (length(custom) == length(defaults)) custom else defaults
   }
 
+  build_generalization_facet_split_from_snapshot <- function(df, snapshot) {
+    facet_by <- snapshot_value(snapshot, "generalization_plot_facet_by", "")
+    if (!nrow(df) || !nzchar(facet_by) || !facet_by %in% names(df)) {
+      return(list(ok = FALSE, message = "No faceting variable selected.", facet = factor(rep("All rows", nrow(df))), cutoffs = numeric(), counts = data.frame()))
+    }
+    facet_mode <- snapshot_value(snapshot, "generalization_plot_facet_mode", "quantile")
+    if (vector_is_numeric_like(df[[facet_by]]) && identical(facet_mode, "quantile")) {
+      vals <- suppressWarnings(as.numeric(df[[facet_by]]))
+      probs_txt <- snapshot_value(snapshot, "generalization_plot_quantiles", "0.25,0.5,0.75")
+      probs <- suppressWarnings(as.numeric(strsplit(probs_txt, "[,;|]")[[1]]))
+      probs <- probs[is.finite(probs) & probs > 0 & probs < 1]
+      if (!length(probs)) probs <- c(0.25, 0.5, 0.75)
+      cutoffs <- unique(stats::quantile(vals, probs = probs, na.rm = TRUE, names = FALSE, type = 7))
+      cutoffs <- cutoffs[is.finite(cutoffs)]
+      if (!length(cutoffs)) {
+        return(list(ok = FALSE, message = "Selected numeric faceting variable does not have enough finite variation for quantile bins.", facet = factor(rep("All rows", nrow(df))), cutoffs = cutoffs, counts = data.frame()))
+      }
+      bins <- cut(vals, breaks = c(-Inf, cutoffs, Inf), include.lowest = TRUE, dig.lab = 8)
+      counts <- as.data.frame(table(Facet = bins, useNA = "ifany"), stringsAsFactors = FALSE)
+      names(counts) <- c("Facet_bin", "Rows")
+      return(list(ok = TRUE, message = "", facet = bins, cutoffs = cutoffs, counts = counts, variable = facet_by, numeric = TRUE, values = vals))
+    }
+    raw_values <- as.character(df[[facet_by]])
+    categorical_mode <- snapshot_value(snapshot, "generalization_plot_categorical_facet_mode", "all")
+    selected_value <- snapshot_value(snapshot, "generalization_plot_facet_value", "")
+    if (identical(categorical_mode, "selected_only")) {
+      selected_label <- if (nzchar(selected_value)) selected_value else "Selected value"
+      facet <- factor(ifelse(raw_values == selected_value, selected_label, NA_character_), levels = selected_label)
+      counts <- data.frame(
+        Facet_bin = c(selected_label, "Excluded: other values"),
+        Rows = c(sum(raw_values == selected_value, na.rm = TRUE), sum(raw_values != selected_value, na.rm = TRUE)),
+        stringsAsFactors = FALSE
+      )
+      return(list(ok = any(!is.na(facet)), message = "", facet = facet, cutoffs = numeric(), counts = counts, variable = facet_by, numeric = FALSE, values = raw_values))
+    }
+    if (identical(categorical_mode, "selected_vs_rest")) {
+      selected_label <- if (nzchar(selected_value)) selected_value else "Selected value"
+      other_label <- "All other values"
+      facet <- factor(ifelse(raw_values == selected_value, selected_label, other_label), levels = c(selected_label, other_label))
+      counts <- as.data.frame(table(Facet = facet, useNA = "ifany"), stringsAsFactors = FALSE)
+      names(counts) <- c("Facet_bin", "Rows")
+      return(list(ok = TRUE, message = "", facet = facet, cutoffs = numeric(), counts = counts, variable = facet_by, numeric = FALSE, values = raw_values))
+    }
+    facet <- ordered_factor_for_plot(raw_values)
+    counts <- as.data.frame(table(Facet = facet, useNA = "ifany"), stringsAsFactors = FALSE)
+    names(counts) <- c("Facet_bin", "Rows")
+    list(ok = TRUE, message = "", facet = facet, cutoffs = numeric(), counts = counts, variable = facet_by, numeric = FALSE, values = raw_values)
+  }
+
   render_recipe_dimred_plot <- function(plot_id, payload, style, snapshot) {
     if (!is.list(payload) || !isTRUE(payload$ok) || !is.data.frame(payload$scores) || !nrow(payload$scores)) return(FALSE)
     scores <- payload$scores
@@ -4698,53 +4747,88 @@ server <- function(input, output, session) {
     df$.group <- if (length(grouping_cols) > 1) ordered_interaction_factor(df, grouping_cols) else ordered_factor_for_plot(df[[group]])
     df <- df[is.finite(df$.y) & !is.na(df$.group), , drop = FALSE]
     if (!nrow(df)) return(FALSE)
-    df$.facet <- factor("All rows")
+    facet_split <- build_generalization_facet_split_from_snapshot(df, snapshot)
+    apply_facets <- identical(tolower(snapshot_value(snapshot, "generalization_plot_apply_facets", "FALSE")), "true") && isTRUE(facet_split$ok)
+    if (apply_facets) {
+      df$.facet <- facet_split$facet
+      df <- df[!is.na(df$.facet), , drop = FALSE]
+      if (!nrow(df)) return(FALSE)
+    } else {
+      df$.facet <- factor("All rows")
+    }
     levels_x <- levels(df$.group)
     display_levels_x <- recipe_tick_labels(style, "x_tick_labels", plot_display_labels(gsub(" \\| ", " | ", levels_x), width = 22))
     color_source <- if (identical(color_by, "__group__") || !color_by %in% names(df)) group else color_by
     color_is_numeric <- color_source %in% names(df) && vector_is_numeric_like(df[[color_source]])
-    op <- par(mar = c(8, 5.2, 3.2, if (color_is_numeric) 8 else 3), family = style$font_family %||% "Arial")
+    facet_levels <- levels(droplevels(df$.facet))
+    if (!length(facet_levels)) facet_levels <- unique(as.character(df$.facet))
+    n_panels <- length(facet_levels)
+    op <- par(
+      mfrow = c(n_panels, 1),
+      mar = c(if (n_panels > 1) 5.5 else 8, 5.2, 3.2, if (color_is_numeric) 8 else 3),
+      family = style$font_family %||% "Arial"
+    )
     on.exit(par(op), add = TRUE)
     ylim <- range(c(0, df$.y), na.rm = TRUE)
     if (!is.finite(diff(ylim)) || diff(ylim) == 0) ylim <- ylim + c(-0.5, 0.5)
-    x <- as.numeric(df$.group)
-    set.seed(42)
-    jitter_x <- x + runif(length(x), -0.18, 0.18)
-    if (color_is_numeric) {
-      point_cols <- continuous_palette(df[[color_source]])
-      bar_color_values <- tapply(suppressWarnings(as.numeric(df[[color_source]])), df$.group, mean, na.rm = TRUE)
-      bar_cols <- continuous_palette(bar_color_values)
-      names(bar_cols) <- names(bar_color_values)
-    } else {
-      color_factor <- if (color_source %in% names(df)) ordered_factor_for_plot(df[[color_source]]) else df$.group
-      pal <- grDevices::hcl.colors(length(levels(color_factor)), "Dark 3")
-      point_cols <- pal[as.integer(color_factor)]
-      bar_group <- tapply(as.character(color_factor), df$.group, function(v) names(sort(table(v), decreasing = TRUE))[[1]])
-      bar_cols <- pal[match(bar_group, levels(color_factor))]
-      names(bar_cols) <- names(bar_group)
-    }
-    plot(jitter_x, df$.y, xaxt = "n", xlab = recipe_axis_label(style, "x_label", ""), ylab = y_label,
-         pch = 19, col = point_cols, xlim = c(0.5, length(levels_x) + 0.5), ylim = ylim,
-         main = style$title %||% paste(plot_title_var, "by", plot_display_label(group, width = 32, multiline = FALSE)),
-         cex.lab = style_num(style, "x_axis_size", 12) / 12,
-         cex.axis = style_num(style, "x_tick_size", 9) / 9,
-         cex.main = style_num(style, "title_size", 18) / 18)
-    means <- tapply(df$.y, df$.group, mean, na.rm = TRUE)
-    bar_centers <- seq_along(levels_x)
-    draw_idx <- which(is.finite(means[levels_x]))
-    bar_cols_full <- rep("#8fb8de", length(levels_x))
-    names(bar_cols_full) <- levels_x
-    matching_bar_cols <- intersect(names(bar_cols), levels_x)
-    bar_cols_full[matching_bar_cols] <- bar_cols[matching_bar_cols]
-    rect(bar_centers[draw_idx] - 0.28, 0, bar_centers[draw_idx] + 0.28, means[levels_x][draw_idx], col = grDevices::adjustcolor(bar_cols_full[draw_idx], alpha.f = 0.38), border = "#173f35")
-    points(jitter_x, df$.y, pch = 19, col = point_cols)
-    points(bar_centers, means[levels_x], pch = 23, bg = "#fbf1d7", col = "#173f35", cex = 1.4)
-    axis(1, at = seq_along(levels_x), labels = display_levels_x, las = style_num(style, "x_tick_angle", 2), cex.axis = style_num(style, "x_tick_size", 9) / 12)
-    if (color_is_numeric) {
-      draw_continuous_palette_legend(plot_display_label(color_source, width = 28, multiline = FALSE), df[[color_source]])
-      legend("topright", legend = "Group mean", pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = style_num(style, "legend_size", 9) / 11)
-    } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
-      legend("topright", legend = c(levels(color_factor), "Group mean"), pch = c(rep(19, length(levels(color_factor))), 23), pt.bg = c(rep(NA, length(levels(color_factor))), "#fbf1d7"), col = c(pal, "#173f35"), bty = "n", cex = style_num(style, "legend_size", 9) / 12)
+    xlim <- c(0.5, length(levels_x) + 0.5)
+    for (facet_label in facet_levels) {
+      panel_df <- df[as.character(df$.facet) == facet_label, , drop = FALSE]
+      if (!nrow(panel_df)) next
+      x <- as.numeric(panel_df$.group)
+      set.seed(42)
+      jitter_x <- x + runif(length(x), -0.18, 0.18)
+      if (color_is_numeric) {
+        point_cols <- continuous_palette(panel_df[[color_source]])
+        bar_color_values <- tapply(suppressWarnings(as.numeric(panel_df[[color_source]])), panel_df$.group, mean, na.rm = TRUE)
+        bar_cols <- continuous_palette(bar_color_values)
+        names(bar_cols) <- names(bar_color_values)
+      } else {
+        color_factor <- if (color_source %in% names(panel_df)) ordered_factor_for_plot(panel_df[[color_source]]) else panel_df$.group
+        pal <- grDevices::hcl.colors(length(levels(color_factor)), "Dark 3")
+        point_cols <- pal[as.integer(color_factor)]
+        bar_group <- tapply(as.character(color_factor), panel_df$.group, function(v) names(sort(table(v), decreasing = TRUE))[[1]])
+        bar_cols <- pal[match(bar_group, levels(color_factor))]
+        names(bar_cols) <- names(bar_group)
+      }
+      main_title <- if (apply_facets) {
+        paste(plot_title_var, "|", plot_display_label(facet_split$variable, width = 32, multiline = FALSE), "=", facet_label)
+      } else {
+        style$title %||% paste(plot_title_var, "by", plot_display_label(group, width = 32, multiline = FALSE))
+      }
+      plot(
+        jitter_x, panel_df$.y,
+        xaxt = "n",
+        xlab = if (n_panels > 1) "" else recipe_axis_label(style, "x_label", ""),
+        ylab = y_label,
+        pch = 19,
+        col = point_cols,
+        xlim = xlim,
+        ylim = ylim,
+        main = main_title,
+        cex.lab = style_num(style, "x_axis_size", 12) / 12,
+        cex.axis = style_num(style, "x_tick_size", 9) / 9,
+        cex.main = style_num(style, "title_size", 18) / 18
+      )
+      means <- tapply(panel_df$.y, panel_df$.group, mean, na.rm = TRUE)
+      bar_centers <- seq_along(levels_x)
+      draw_idx <- which(is.finite(means[levels_x]))
+      bar_cols_full <- rep("#8fb8de", length(levels_x))
+      names(bar_cols_full) <- levels_x
+      matching_bar_cols <- intersect(names(bar_cols), levels_x)
+      bar_cols_full[matching_bar_cols] <- bar_cols[matching_bar_cols]
+      rect(bar_centers[draw_idx] - 0.28, 0, bar_centers[draw_idx] + 0.28, means[levels_x][draw_idx], col = grDevices::adjustcolor(bar_cols_full[draw_idx], alpha.f = 0.38), border = "#173f35")
+      points(jitter_x, panel_df$.y, pch = 19, col = point_cols)
+      points(bar_centers, means[levels_x], pch = 23, bg = "#fbf1d7", col = "#173f35", cex = 1.4)
+      axis(1, at = seq_along(levels_x), labels = display_levels_x, las = style_num(style, "x_tick_angle", 2), cex.axis = if (n_panels > 1) style_num(style, "x_tick_size", 9) / 14 else style_num(style, "x_tick_size", 9) / 12)
+      if (!apply_facets || identical(facet_label, facet_levels[[1]])) {
+        if (color_is_numeric) {
+          draw_continuous_palette_legend(plot_display_label(color_source, width = 28, multiline = FALSE), panel_df[[color_source]])
+          legend("topright", legend = "Group mean", pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = style_num(style, "legend_size", 9) / 11)
+        } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
+          legend("topright", legend = c(levels(color_factor), "Group mean"), pch = c(rep(19, length(levels(color_factor))), 23), pt.bg = c(rep(NA, length(levels(color_factor))), "#fbf1d7"), col = c(pal, "#173f35"), bty = "n", cex = style_num(style, "legend_size", 9) / 12)
+        }
+      }
     }
     TRUE
   }
@@ -10476,6 +10560,14 @@ server <- function(input, output, session) {
     tests
   }
 
+  selected_generalization_stats_scope <- function(prep = NULL) {
+    scope <- input$generalization_stats_scope %||% "within"
+    if (!scope %in% c("within", "within_and_across", "across")) scope <- "within"
+    prep <- prep %||% tryCatch(generalization_group_plot_data(), error = function(e) NULL)
+    if (is.null(prep) || !isTRUE(prep$ok) || !isTRUE(prep$apply_facets)) return("within")
+    scope
+  }
+
   generalization_group_plot_data <- reactive({
     df <- tab4_filtered_table()
     var <- input$generalization_plot_variable %||% ""
@@ -10551,12 +10643,20 @@ server <- function(input, output, session) {
     alpha <- suppressWarnings(as.numeric(input$generalization_stats_alpha %||% 0.05))
     if (!is.finite(alpha) || alpha <= 0 || alpha >= 1) alpha <- 0.05
     tests <- selected_generalization_stats_tests()
+    scope <- selected_generalization_stats_scope(prep)
     test_text <- paste(c(
       if ("welch" %in% tests) "Welch ANOVA + Holm-adjusted Welch t-tests",
       if ("kruskal" %in% tests) "Kruskal-Wallis + Holm-adjusted pairwise Wilcoxon tests"
     ), collapse = " and ")
     facet_note <- if (isTRUE(prep$apply_facets) && isTRUE(prep$facet_split$ok)) {
-      paste0(" (computed separately within facets of ", plot_display_label(prep$facet_split$variable, width = 42, multiline = FALSE), ")")
+      scope_note <- switch(
+        scope,
+        "within" = "computed separately within each facet",
+        "within_and_across" = "computed within each facet and also across facet levels for the same plotted group",
+        "across" = "focused on across-facet comparisons for the same plotted group",
+        "computed separately within each facet"
+      )
+      paste0(" (", scope_note, " of ", plot_display_label(prep$facet_split$variable, width = 42, multiline = FALSE), ")")
     } else {
       ""
     }
@@ -10579,6 +10679,9 @@ server <- function(input, output, session) {
     alpha <- suppressWarnings(as.numeric(input$generalization_stats_alpha %||% 0.05))
     if (!is.finite(alpha) || alpha <= 0 || alpha >= 1) alpha <- 0.05
     tests <- selected_generalization_stats_tests()
+    scope <- selected_generalization_stats_scope(prep)
+    include_within <- !identical(scope, "across")
+    include_across <- isTRUE(prep$apply_facets) && (identical(scope, "within_and_across") || identical(scope, "across"))
     mean_col <- paste0("Mean (", prep$plot_title_var, ")")
     sd_col <- paste0("SD (", prep$plot_title_var, ")")
     median_col <- paste0("Median (", prep$plot_title_var, ")")
@@ -10613,6 +10716,13 @@ server <- function(input, output, session) {
       out$Median <- round(out$Median, 4)
       if (identical(mode, "summary")) {
         out$Alpha_level <- sprintf("%.3g", alpha)
+        out$Comparison_scope <- switch(
+          scope,
+          "within" = "Within-facet group summaries",
+          "within_and_across" = "Within-facet group summaries; across-facet same-group comparisons available only in inferential modes",
+          "across" = "Across-facet same-group comparisons available only in inferential modes",
+          "Within-facet group summaries"
+        )
         out$Selected_test_families <- paste(c(
           if ("welch" %in% tests) "Welch",
           if ("kruskal" %in% tests) "Kruskal-Wallis"
@@ -10621,6 +10731,13 @@ server <- function(input, output, session) {
         return(out)
       }
       out$Alpha_level <- sprintf("%.3g", alpha)
+      out$Comparison_scope <- switch(
+        scope,
+        "within" = "Within-facet group comparisons only",
+        "within_and_across" = "Within-facet group comparisons plus across-facet same-group comparisons",
+        "across" = "Across-facet same-group comparisons only",
+        "Within-facet group comparisons only"
+      )
       out$Selected_test_families <- paste(c(
         if ("welch" %in% tests) "Welch",
         if ("kruskal" %in% tests) "Kruskal-Wallis"
@@ -10685,21 +10802,23 @@ server <- function(input, output, session) {
         }
         if (length(pairwise_rows)) do.call(rbind, pairwise_rows) else data.frame()
       }
-      if ("welch" %in% tests) {
-        welch_omnibus_p <- tryCatch(stats::oneway.test(.y ~ .group, data = panel_df)$p.value, error = function(e) NA_real_)
-        welch_pairwise_mat <- tryCatch(
-          stats::pairwise.t.test(panel_df$.y, panel_df$.group, p.adjust.method = "holm", pool.sd = FALSE)$p.value,
-          error = function(e) NULL
-        )
-        fill_test_family("Welch", welch_omnibus_p, build_pairwise_df(welch_pairwise_mat))
-      }
-      if ("kruskal" %in% tests) {
-        kruskal_omnibus_p <- tryCatch(stats::kruskal.test(.y ~ .group, data = panel_df)$p.value, error = function(e) NA_real_)
-        kruskal_pairwise_mat <- tryCatch(
-          stats::pairwise.wilcox.test(panel_df$.y, panel_df$.group, p.adjust.method = "holm", exact = FALSE)$p.value,
-          error = function(e) NULL
-        )
-        fill_test_family("Kruskal", kruskal_omnibus_p, build_pairwise_df(kruskal_pairwise_mat))
+      if (include_within) {
+        if ("welch" %in% tests) {
+          welch_omnibus_p <- tryCatch(stats::oneway.test(.y ~ .group, data = panel_df)$p.value, error = function(e) NA_real_)
+          welch_pairwise_mat <- tryCatch(
+            stats::pairwise.t.test(panel_df$.y, panel_df$.group, p.adjust.method = "holm", pool.sd = FALSE)$p.value,
+            error = function(e) NULL
+          )
+          fill_test_family("Welch", welch_omnibus_p, build_pairwise_df(welch_pairwise_mat))
+        }
+        if ("kruskal" %in% tests) {
+          kruskal_omnibus_p <- tryCatch(stats::kruskal.test(.y ~ .group, data = panel_df)$p.value, error = function(e) NA_real_)
+          kruskal_pairwise_mat <- tryCatch(
+            stats::pairwise.wilcox.test(panel_df$.y, panel_df$.group, p.adjust.method = "holm", exact = FALSE)$p.value,
+            error = function(e) NULL
+          )
+          fill_test_family("Kruskal", kruskal_omnibus_p, build_pairwise_df(kruskal_pairwise_mat))
+        }
       }
       out
     }
@@ -10712,11 +10831,125 @@ server <- function(input, output, session) {
     })
     out <- do.call(rbind, Filter(Negate(is.null), tables))
     if (!nrow(out)) return(data.frame(Message = "No grouped statistics are available for the current selection.", stringsAsFactors = FALSE))
+    if (!include_within && !identical(mode, "summary")) {
+      for (prefix in c("Welch", "Kruskal")) {
+        if (prefix == "Welch" && !"welch" %in% tests) next
+        if (prefix == "Kruskal" && !"kruskal" %in% tests) next
+        out[[paste0(prefix, "_comparison")]] <- "Within-facet comparisons not requested."
+        out[[paste0(prefix, "_adjusted_p_value")]] <- NA_character_
+        out[[paste0(prefix, "_omnibus_p_value")]] <- NA_character_
+        out[[paste0(prefix, "_star_summary")]] <- ""
+      }
+    }
+    if (include_across && !identical(mode, "summary")) {
+      build_across_pairwise_df <- function(pairwise_mat) {
+        pairwise_rows <- list()
+        if (!is.null(pairwise_mat) && nrow(pairwise_mat) && ncol(pairwise_mat)) {
+          idx <- 1L
+          for (r in rownames(pairwise_mat)) {
+            for (c in colnames(pairwise_mat)) {
+              p_val <- suppressWarnings(as.numeric(pairwise_mat[r, c]))
+              if (is.finite(p_val)) {
+                pairwise_rows[[idx]] <- data.frame(Facet_A = c, Facet_B = r, Adjusted_P_value = p_val, stringsAsFactors = FALSE)
+                idx <- idx + 1L
+              }
+            }
+          }
+        }
+        if (length(pairwise_rows)) do.call(rbind, pairwise_rows) else data.frame()
+      }
+      fill_across_facet_family <- function(prefix, omnibus_fun, pairwise_fun) {
+        comparison_col <- paste0(prefix, "_across_facet_comparison")
+        p_col <- paste0(prefix, "_across_facet_adjusted_p_value")
+        omnibus_col <- paste0(prefix, "_across_facet_omnibus_p_value")
+        star_col <- paste0(prefix, "_across_facet_star_summary")
+        out[[comparison_col]] <<- ""
+        out[[p_col]] <<- ""
+        out[[omnibus_col]] <<- ""
+        out[[star_col]] <<- ""
+        group_levels_all <- unique(as.character(out$Group))
+        for (g in group_levels_all) {
+          group_df <- df[as.character(df$.group) == g & !is.na(df$.facet), , drop = FALSE]
+          group_rows <- which(as.character(out$Group) == g)
+          facet_levels_group <- levels(droplevels(group_df$.facet))
+          if (!length(facet_levels_group)) facet_levels_group <- unique(as.character(group_df$.facet))
+          if (length(facet_levels_group) < 2) {
+            out[[comparison_col]][group_rows] <<- "Only one facet level is present for this plotted group."
+            out[[p_col]][group_rows] <<- NA_character_
+            out[[omnibus_col]][group_rows] <<- NA_character_
+            out[[star_col]][group_rows] <<- ""
+            next
+          }
+          omnibus_p <- tryCatch(omnibus_fun(group_df), error = function(e) NA_real_)
+          pairwise_df <- tryCatch(build_across_pairwise_df(pairwise_fun(group_df)), error = function(e) data.frame())
+          for (row_idx in group_rows) {
+            facet_label <- as.character(out$Facet[[row_idx]])
+            out[[omnibus_col]][row_idx] <<- format_p_value(omnibus_p)
+            if (!nrow(pairwise_df)) {
+              out[[comparison_col]][row_idx] <<- "Not enough facet-level replicates for post hoc comparison."
+              out[[p_col]][row_idx] <<- NA_character_
+              out[[star_col]][row_idx] <<- ""
+              next
+            }
+            hits <- pairwise_df[pairwise_df$Facet_A == facet_label | pairwise_df$Facet_B == facet_label, , drop = FALSE]
+            if (!nrow(hits)) {
+              out[[comparison_col]][row_idx] <<- "No eligible across-facet comparison"
+              out[[p_col]][row_idx] <<- NA_character_
+              out[[star_col]][row_idx] <<- ""
+              next
+            }
+            other_facets <- ifelse(hits$Facet_A == facet_label, hits$Facet_B, hits$Facet_A)
+            out[[comparison_col]][row_idx] <<- paste(sprintf("same group vs facet %s", other_facets), collapse = "; ")
+            out[[p_col]][row_idx] <<- paste(vapply(hits$Adjusted_P_value, format_p_value, character(1)), collapse = "; ")
+            star_parts <- ifelse(
+              hits$Adjusted_P_value < alpha,
+              paste0(other_facets, " ", vapply(hits$Adjusted_P_value, significance_stars, character(1))),
+              paste0(other_facets, " ns")
+            )
+            out[[star_col]][row_idx] <<- paste(star_parts, collapse = "; ")
+          }
+        }
+      }
+      if ("welch" %in% tests) {
+        fill_across_facet_family(
+          "Welch",
+          function(group_df) stats::oneway.test(.y ~ .facet, data = group_df)$p.value,
+          function(group_df) stats::pairwise.t.test(group_df$.y, group_df$.facet, p.adjust.method = "holm", pool.sd = FALSE)$p.value
+        )
+      }
+      if ("kruskal" %in% tests) {
+        fill_across_facet_family(
+          "Kruskal",
+          function(group_df) stats::kruskal.test(.y ~ .facet, data = group_df)$p.value,
+          function(group_df) stats::pairwise.wilcox.test(group_df$.y, group_df$.facet, p.adjust.method = "holm", exact = FALSE)$p.value
+        )
+      }
+    }
     if (!isTRUE(prep$apply_facets)) out$Facet <- NULL
     names(out)[names(out) == "Mean"] <- mean_col
     names(out)[names(out) == "SD"] <- sd_col
     names(out)[names(out) == "Median"] <- median_col
     names(out)[names(out) == "IQR"] <- iqr_col
+    readable_names <- c(
+      Welch_comparison = "Welch within-facet comparison",
+      Welch_adjusted_p_value = "Welch within-facet adjusted p-value",
+      Welch_omnibus_p_value = "Welch within-facet omnibus p-value",
+      Welch_star_summary = "Welch within-facet star summary",
+      Kruskal_comparison = "Kruskal within-facet comparison",
+      Kruskal_adjusted_p_value = "Kruskal within-facet adjusted p-value",
+      Kruskal_omnibus_p_value = "Kruskal within-facet omnibus p-value",
+      Kruskal_star_summary = "Kruskal within-facet star summary",
+      Welch_across_facet_comparison = "Welch across-facet same-group comparison",
+      Welch_across_facet_adjusted_p_value = "Welch across-facet same-group adjusted p-value",
+      Welch_across_facet_omnibus_p_value = "Welch across-facet same-group omnibus p-value",
+      Welch_across_facet_star_summary = "Welch across-facet same-group star summary",
+      Kruskal_across_facet_comparison = "Kruskal across-facet same-group comparison",
+      Kruskal_across_facet_adjusted_p_value = "Kruskal across-facet same-group adjusted p-value",
+      Kruskal_across_facet_omnibus_p_value = "Kruskal across-facet same-group omnibus p-value",
+      Kruskal_across_facet_star_summary = "Kruskal across-facet same-group star summary"
+    )
+    present_names <- intersect(names(readable_names), names(out))
+    names(out)[match(present_names, names(out))] <- unname(readable_names[present_names])
     out
   })
 
@@ -10742,6 +10975,8 @@ server <- function(input, output, session) {
     facet_is_numeric <- nzchar(selected_facet) && selected_facet %in% names(df) && vector_is_numeric_like(df[[selected_facet]])
     stats_mode <- input$generalization_stats_mode %||% "control"
     if (!stats_mode %in% c("summary", "pairwise", "control")) stats_mode <- "control"
+    stats_scope <- input$generalization_stats_scope %||% "within"
+    if (!stats_scope %in% c("within", "within_and_across", "across")) stats_scope <- "within"
     stats_alpha <- suppressWarnings(as.numeric(input$generalization_stats_alpha %||% 0.05))
     if (!is.finite(stats_alpha) || stats_alpha <= 0 || stats_alpha >= 1) stats_alpha <- 0.05
     stats_tests <- input$generalization_stats_tests %||% c("welch", "kruskal")
@@ -10813,11 +11048,21 @@ server <- function(input, output, session) {
         "generalization_stats_mode",
         "Comparison mode",
         choices = c(
-          "Summary only (group N, mean, SD)" = "summary",
+          "Summary only (group N, mean, SD, median, IQR)" = "summary",
           "All groups versus all others" = "pairwise",
           "Every group versus one selected control" = "control"
         ),
         selected = stats_mode
+      ),
+      radioButtons(
+        "generalization_stats_scope",
+        "Comparison scope",
+        choices = c(
+          "Compare plotted groups within each facet only" = "within",
+          "Compare plotted groups within each facet and also compare the same plotted group across facet levels" = "within_and_across",
+          "Compare the same plotted group across facet levels only" = "across"
+        ),
+        selected = if (isTRUE(prep$ok) && isTRUE(prep$apply_facets)) stats_scope else "within"
       ),
       numericInput(
         "generalization_stats_alpha",
@@ -11032,6 +11277,7 @@ server <- function(input, output, session) {
     alpha <- suppressWarnings(as.numeric(input$generalization_stats_alpha %||% 0.05))
     if (!is.finite(alpha) || alpha <= 0 || alpha >= 1) alpha <- 0.05
     tests <- selected_generalization_stats_tests()
+    stats_scope <- selected_generalization_stats_scope(prep)
     group_df <- prep$df
     skew_check <- tryCatch({
       split_vals <- split(group_df$.y, as.character(group_df$.group))
@@ -11055,6 +11301,17 @@ server <- function(input, output, session) {
     } else {
       sprintf("The mean, SD, median, and IQR columns refer to the currently displayed plotted value: %s.", plot_display_label(prep$var, width = 52, multiline = FALSE))
     }
+    scope_text <- if (!isTRUE(prep$apply_facets)) {
+      "No vertical facet split is currently applied, so the table only compares the plotted groups in the current filtered dataset."
+    } else {
+      switch(
+        stats_scope,
+        "within" = sprintf("A vertical facet split is active on %s. The inferential columns compare plotted groups separately inside each facet panel only.", plot_display_label(prep$facet_split$variable, width = 42, multiline = FALSE)),
+        "within_and_across" = sprintf("A vertical facet split is active on %s. The table includes both within-facet group comparisons and across-facet comparisons asking whether the same plotted group changes between facet levels.", plot_display_label(prep$facet_split$variable, width = 42, multiline = FALSE)),
+        "across" = sprintf("A vertical facet split is active on %s. The inferential columns focus on whether the same plotted group changes between facet levels; within-facet group comparisons are intentionally left inactive.", plot_display_label(prep$facet_split$variable, width = 42, multiline = FALSE)),
+        "The table follows the current facet split."
+      )
+    }
     explanation <- if (identical(mode, "summary")) {
       "This mode is descriptive only: it summarizes the currently plotted subset by group using N, mean, SD, median, and IQR, without hypothesis testing. Switch to one of the comparison modes if you want multiplicity-aware p-values directly below the grouped plot."
     } else {
@@ -11064,6 +11321,17 @@ server <- function(input, output, session) {
           if ("kruskal" %in% tests) "Kruskal-Wallis is a rank-based omnibus test that is less sensitive to skew and outliers than mean-based tests. Its post hoc columns use Holm-adjusted pairwise Wilcoxon rank-sum tests, which compare the rank distributions between groups rather than the means themselves."
         ),
         collapse = " "
+      )
+    }
+    scope_interpretation <- if (identical(mode, "summary") || !isTRUE(prep$apply_facets)) {
+      NULL
+    } else {
+      switch(
+        stats_scope,
+        "within" = "Within-facet interpretation: each row is compared against other plotted groups from the same facet panel only.",
+        "within_and_across" = "Across-facet interpretation: columns ending in across_facet ask whether this same plotted group differs between the current facet and the other facet levels. The within-facet columns still compare different plotted groups inside each panel.",
+        "across" = "Across-facet interpretation: columns ending in across_facet ask whether this same plotted group differs between the current facet and the other facet levels. Because across-facet-only mode is selected, the within-facet comparison columns are placeholders rather than active tests.",
+        NULL
       )
     }
     interpretation <- if (identical(mode, "summary")) {
@@ -11080,6 +11348,7 @@ server <- function(input, output, session) {
       class = "step-summary-box step-summary-neutral",
       tags$strong(title_text),
       tags$p(measure_text),
+      tags$p(scope_text),
       tags$p(sprintf("Current subset summary: %s of %s tab-4 row(s) remain after filtering, representing %s unique image(s).", filtered_n, full_n, unique_images)),
       tags$p(sprintf("Alpha level used for significance calls and star summaries: %s. The star shorthand follows the adjusted post hoc p-values: * < 0.05, ** < 0.01, *** < 0.001, and ns = not significant.", sprintf("%.3g", alpha))),
       tags$p(sprintf("Selected test families currently shown as columns: %s.", paste(c(if ("welch" %in% tests) "Welch mean-based inference", if ("kruskal" %in% tests) "Kruskal rank-based inference"), collapse = " and "))),
@@ -11087,6 +11356,7 @@ server <- function(input, output, session) {
       tags$p(tags$strong("Applied subset rules:")),
       tags$ul(lapply(filter_lines, tags$li)),
       tags$p(tags$strong("How the statistical test works: "), explanation),
+      if (nzchar(scope_interpretation %||% "")) tags$p(tags$strong("How the facet-aware comparisons work: "), scope_interpretation),
       tags$p(tags$strong("How to interpret it: "), interpretation),
       tags$p("This table follows the same current tab-4 filters, selected outcome, normalization rule, grouping rule, and optional facet split as the grouped plot above. For covariate-adjusted inference, continue to tab 4.5.")
     )
