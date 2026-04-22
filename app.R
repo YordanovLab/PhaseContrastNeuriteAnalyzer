@@ -13643,3 +13643,123 @@ app <- shinyApp(ui, server)
 if (identical(environment(), globalenv()) && !interactive()) {
   runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
 }
+                                                                                                                                                                                                                                                                                                                                                                                        function(e) data.frame(message = "Preview unavailable for this table file.")
+          )
+        }, striped = TRUE, bordered = TRUE, spacing = "xs")
+        output[[paste0("report_preview_", gsub("[^A-Za-z0-9]+", "_", id))]] <- renderTable({
+          if (!step_card_is_visible(id)) return(NULL)
+          if (step_needs_module_refresh(id, runner, validation_runner)) invalidateLater(2000, session)
+          current_step <- find_step_by_id(current_steps(), id)
+          if (is.null(current_step)) return(NULL)
+          report_paths <- step_report_files(current_step$id, settings())
+          report_paths <- report_paths[file.exists(report_paths) & !dir.exists(report_paths)]
+          if (!length(report_paths)) return(NULL)
+          report_target <- report_paths[1]
+          ext <- tolower(tools::file_ext(report_target))
+          if (!ext %in% c("csv", "tsv")) return(NULL)
+          tryCatch(
+            if (ext == "tsv") utils::read.table(report_target, sep = "\t", header = TRUE, nrows = 8, stringsAsFactors = FALSE, check.names = FALSE)
+            else utils::read.csv(report_target, nrows = 8, stringsAsFactors = FALSE, check.names = FALSE),
+            error = function(e) data.frame(message = "Preview unavailable for this report file.")
+          )
+        }, striped = TRUE, bordered = TRUE, spacing = "xs")
+      })
+    }
+  })
+
+  for (step_id in setdiff(all_step_ids, "manual")) {
+    local({
+      id <- step_id
+      observeEvent(input[[paste0("run_", id)]], {
+        if (identical(id, "optimize")) {
+          persist_optimization_scoring_mode(announce = TRUE)
+        }
+        current_step <- Filter(function(x) identical(x$id, id), step_specs(settings(), input))[[1]]
+        prereq_issues <- step_prerequisite_issues(current_step, settings())
+        if (length(prereq_issues)) {
+          show_prerequisite_modal(current_step, prereq_issues)
+          return()
+        }
+        integrity <- step_integrity_check(current_step, settings())
+        if (identical(integrity$state, "partial")) {
+          pending_step(list(step = current_step, runtime = input$runtime_choice, integrity = integrity))
+          showModal(modalDialog(
+            title = paste("Partial output detected for", current_step$title),
+            easyClose = TRUE,
+            modal_top_close(),
+            tags$p(integrity$summary),
+            if (length(integrity$details)) tags$ul(lapply(integrity$details, tags$li)),
+            if (length(integrity$dropouts)) tags$p(sprintf("%s dropout item(s) are currently detected.", length(integrity$dropouts))),
+            tags$p("Choose whether to continue from the current partial state, retry only the missing items when supported, or delete this step's outputs and regenerate them fresh."),
+            footer = tagList(
+              actionButton("partial_continue_btn", "Continue with existing partial outputs"),
+              if (supports_dropout_retry(current_step$id, integrity)) actionButton("partial_retry_btn", "Retry only the detected dropouts", class = "btn-primary"),
+              actionButton("partial_regenerate_btn", "Delete outputs and regenerate fresh", class = "btn-danger")
+            )
+          ))
+        } else {
+          run_step_now(current_step, input$runtime_choice)
+        }
+      }, ignoreInit = TRUE)
+
+      observeEvent(input[[paste0("retry_dropouts_", gsub("[^A-Za-z0-9]+", "_", id))]], {
+        current_step <- Filter(function(x) identical(x$id, id), step_specs(settings(), input))[[1]]
+        integrity <- step_integrity_check(current_step, settings())
+        retry_step <- build_dropout_retry_step(current_step, integrity, input$runtime_choice)
+        if (is.null(retry_step)) {
+          showNotification("This step does not currently support retrying only the missing items.", type = "warning")
+        } else {
+          run_step_now(retry_step, input$runtime_choice)
+        }
+      }, ignoreInit = TRUE)
+    })
+  }
+
+  observeEvent(input$clear_log_btn, log_lines(character()))
+
+  output$log_output <- renderText({
+    invalidateLater(1000, session)
+    if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
+      file_text <- tryCatch(paste(utils::tail(readLines(runner$log_file, warn = FALSE), 200), collapse = "\n"), error = function(e) "")
+      prefix <- paste(log_lines(), collapse = "\n")
+      trimws(paste(prefix, file_text, sep = if (nzchar(prefix) && nzchar(file_text)) "\n" else ""))
+    } else {
+      paste(log_lines(), collapse = "\n")
+    }
+  })
+
+  output$download_history_btn <- downloadHandler(
+    filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
+    content = function(file) {
+      hist <- history_df()
+      write.csv(hist, file, row.names = FALSE)
+    }
+  )
+
+  output$download_live_log_btn <- downloadHandler(
+    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
+    content = function(file) {
+      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
+        file.copy(runner$log_file, file, overwrite = TRUE)
+      } else {
+        writeLines(log_lines(), file)
+      }
+    }
+  )
+
+  output$download_saved_log_btn <- downloadHandler(
+    filename = function() {
+      paste0("saved_run_log_", format(Sys.Date()), ".txt")
+    },
+    content = function(file) {
+      req(nzchar(input$saved_log_choice))
+      file.copy(input$saved_log_choice, file, overwrite = TRUE)
+    }
+  )
+}
+
+app <- shinyApp(ui, server)
+
+if (identical(environment(), globalenv()) && !interactive()) {
+  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
+}
