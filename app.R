@@ -7,6 +7,7 @@ settings_path <- file.path(project_root, "config", "pipeline_settings.env")
 run_log_dir <- file.path(project_root, "cache", "run_logs")
 run_history_file <- file.path(run_log_dir, "command_history.csv")
 has_processx <- requireNamespace("processx", quietly = TRUE)
+app_version_marker <- "PCNA_APP_VERSION_2026-04-22_combo_filters_and_facet_stats_v1"
 
 read_settings_file <- function(path) {
   if (!file.exists(path)) return(list())
@@ -3273,8 +3274,10 @@ ui <- fluidPage(
                      tags$p(class = "helper-text", "Use this after unzipping the Zenodo archive if the app finds too few images or reports Permission denied. It repairs only the selected input image tree."),
                      actionButton("refresh_checks_btn", "Refresh checks"),
                      br(), br(),
-                     label_with_help("Runtime summary", "runtime_table"),
-                     tableOutput("runtime_table"))
+                    label_with_help("Runtime summary", "runtime_table"),
+                    tableOutput("runtime_table"),
+                    br(),
+                    div(class = "decision-box", tags$strong("App version marker: "), tags$code(app_version_marker)))
           )
         ),
         br(),
@@ -9852,6 +9855,7 @@ server <- function(input, output, session) {
   }
 
   tab4_additional_filter_indices <- 2:8
+  tab4_combination_filter_indices <- 1:2
 
   output$tab4_filter_controls_ui <- renderUI({
     df <- tab4_source_table()
@@ -9913,6 +9917,19 @@ server <- function(input, output, session) {
           )
         }))
       ),
+      tags$details(
+        tags$summary("Specific combination exclusions or keeps"),
+        tags$p(class = "metric-info-box", "Use these rules when you need to exclude or keep a specific combination only. Example: exclude concentration 10 only when compound is RosAc, while keeping concentration 10 for RetAc or other compounds."),
+        tagList(lapply(tab4_combination_filter_indices, function(i) {
+          fluidRow(
+            column(2, selectInput(paste0("tab4_combo_mode_", i), sprintf("Rule %s action", i), choices = c("No rule" = "", "Exclude matching rows" = "exclude", "Keep only matching rows" = "keep"), selected = input[[paste0("tab4_combo_mode_", i)]] %||% "")),
+            column(2, selectInput(paste0("tab4_combo_column_a_", i), sprintf("Rule %s variable A", i), choices = c("None" = "", cols), selected = input[[paste0("tab4_combo_column_a_", i)]] %||% "")),
+            column(3, uiOutput(paste0("tab4_combo_value_ui_a_", i))),
+            column(2, selectInput(paste0("tab4_combo_column_b_", i), sprintf("Rule %s variable B", i), choices = c("None" = "", cols), selected = input[[paste0("tab4_combo_column_b_", i)]] %||% "")),
+            column(3, uiOutput(paste0("tab4_combo_value_ui_b_", i)))
+          )
+        }))
+      ),
       fluidRow(
         column(6, checkboxInput("tab4_include_cutoff_training", "Include images used for cutoff-model optimization training", value = isTRUE(include_cutoff_training))),
         column(6, checkboxInput("tab4_include_ilastik_training", "Include images used for ilastik training", value = isTRUE(include_ilastik_training)))
@@ -9956,6 +9973,47 @@ server <- function(input, output, session) {
     local({
       i <- filter_index
       output[[paste0("tab4_filter_value_ui_", i)]] <- renderUI(tab4_filter_value_control(i))
+    })
+  }
+
+  tab4_combo_value_control <- function(index, side = c("a", "b")) {
+    side <- match.arg(side)
+    df <- tab4_source_table()
+    col <- input[[paste0("tab4_combo_column_", side, "_", index)]] %||% ""
+    if (!nrow(df) || !nzchar(col) || !col %in% names(df)) return(NULL)
+    raw_vals <- df[[col]]
+    if (vector_is_numeric_like(raw_vals)) {
+      vals <- sort(unique(numeric_like_values(raw_vals)))
+      vals <- vals[is.finite(vals)]
+      selected <- input[[paste0("tab4_combo_values_", side, "_", index)]] %||% character()
+      selected <- intersect(as.character(vals), as.character(selected))
+      return(selectizeInput(
+        paste0("tab4_combo_values_", side, "_", index),
+        sprintf("Values for %s", toupper(side)),
+        choices = setNames(as.character(vals), numeric_choice_labels(vals, raw_vals)),
+        selected = selected,
+        multiple = TRUE,
+        options = list(plugins = list("remove_button"))
+      ))
+    }
+    vals <- ordered_unique_values(raw_vals)
+    selected <- input[[paste0("tab4_combo_values_", side, "_", index)]] %||% character()
+    selected <- intersect(vals, selected)
+    selectizeInput(
+      paste0("tab4_combo_values_", side, "_", index),
+      sprintf("Values for %s", toupper(side)),
+      choices = vals,
+      selected = selected,
+      multiple = TRUE,
+      options = list(plugins = list("remove_button"))
+    )
+  }
+
+  for (combo_index in tab4_combination_filter_indices) {
+    local({
+      i <- combo_index
+      output[[paste0("tab4_combo_value_ui_a_", i)]] <- renderUI(tab4_combo_value_control(i, "a"))
+      output[[paste0("tab4_combo_value_ui_b_", i)]] <- renderUI(tab4_combo_value_control(i, "b"))
     })
   }
 
@@ -10084,6 +10142,26 @@ server <- function(input, output, session) {
     df
   }
 
+  tab4_match_selected_values <- function(vec, selected_values) {
+    if (!length(selected_values)) return(rep(FALSE, length(vec)))
+    selected_chr <- as.character(selected_values)
+    if (vector_is_numeric_like(vec)) {
+      vals <- numeric_like_values(vec)
+      selected_num <- suppressWarnings(as.numeric(selected_chr))
+      selected_num <- selected_num[is.finite(selected_num)]
+      return(is.finite(vals) & vals %in% selected_num)
+    }
+    as.character(vec) %in% selected_chr
+  }
+
+  apply_tab4_combination_rule <- function(df, mode = "", col_a = "", values_a = NULL, col_b = "", values_b = NULL) {
+    if (!nrow(df) || !nzchar(mode %||% "") || !mode %in% c("exclude", "keep")) return(df)
+    if (!nzchar(col_a %||% "") || !nzchar(col_b %||% "") || !col_a %in% names(df) || !col_b %in% names(df)) return(df)
+    if (!length(values_a) || !length(values_b)) return(df)
+    hit <- tab4_match_selected_values(df[[col_a]], values_a) & tab4_match_selected_values(df[[col_b]], values_b)
+    if (identical(mode, "exclude")) df[!hit, , drop = FALSE] else df[hit, , drop = FALSE]
+  }
+
   tab4_filtered_table <- reactive({
     df <- tab4_source_table()
     if (!nrow(df)) return(df)
@@ -10110,6 +10188,16 @@ server <- function(input, output, session) {
         input[[paste0("tab4_filter_numeric_max_", i)]],
         tab4_exact_numeric_filter_enabled(df, filter_col_i),
         input[[paste0("tab4_filter_exact_mode_", i)]] %||% tab4_default_exact_numeric_mode(df, filter_col_i)
+      )
+    }
+    for (i in tab4_combination_filter_indices) {
+      df <- apply_tab4_combination_rule(
+        df,
+        mode = input[[paste0("tab4_combo_mode_", i)]] %||% "",
+        col_a = input[[paste0("tab4_combo_column_a_", i)]] %||% "",
+        values_a = input[[paste0("tab4_combo_values_a_", i)]],
+        col_b = input[[paste0("tab4_combo_column_b_", i)]] %||% "",
+        values_b = input[[paste0("tab4_combo_values_b_", i)]]
       )
     }
     if (".is_cutoff_training_image" %in% names(df) && !isTRUE(input$tab4_include_cutoff_training %||% TRUE)) {
@@ -10160,6 +10248,27 @@ server <- function(input, output, session) {
     sprintf("%s: keeping [%s]", label, shown_vals)
   }
 
+  describe_tab4_combination_rule <- function(df, mode = "", col_a = "", values_a = NULL, col_b = "", values_b = NULL) {
+    if (!nrow(df) || !nzchar(mode %||% "") || !mode %in% c("exclude", "keep")) return("")
+    if (!nzchar(col_a %||% "") || !nzchar(col_b %||% "") || !col_a %in% names(df) || !col_b %in% names(df)) return("")
+    if (!length(values_a) || !length(values_b)) return("")
+    fmt_vals <- function(v) {
+      vals <- unique(as.character(v))
+      shown <- paste(utils::head(vals, 6), collapse = ", ")
+      if (length(vals) > 6) shown <- paste0(shown, ", ...")
+      shown
+    }
+    action <- if (identical(mode, "exclude")) "excluding rows where" else "keeping only rows where"
+    sprintf(
+      "Combination rule: %s %s in [%s] AND %s in [%s]",
+      action,
+      plot_display_label(col_a, width = 30, multiline = FALSE),
+      fmt_vals(values_a),
+      plot_display_label(col_b, width = 30, multiline = FALSE),
+      fmt_vals(values_b)
+    )
+  }
+
   tab4_active_filter_summary_lines <- reactive({
     df <- tab4_source_table()
     if (!nrow(df)) return("No saved tab-4 source table is available.")
@@ -10189,6 +10298,17 @@ server <- function(input, output, session) {
         input[[paste0("tab4_filter_exact_mode_", i)]] %||% tab4_default_exact_numeric_mode(df, input[[paste0("tab4_filter_column_", i)]] %||% "")
       )
       if (nzchar(line_i)) lines <- c(lines, line_i)
+    }
+    for (i in tab4_combination_filter_indices) {
+      combo_line <- describe_tab4_combination_rule(
+        df,
+        mode = input[[paste0("tab4_combo_mode_", i)]] %||% "",
+        col_a = input[[paste0("tab4_combo_column_a_", i)]] %||% "",
+        values_a = input[[paste0("tab4_combo_values_a_", i)]],
+        col_b = input[[paste0("tab4_combo_column_b_", i)]] %||% "",
+        values_b = input[[paste0("tab4_combo_values_b_", i)]]
+      )
+      if (nzchar(combo_line)) lines <- c(lines, combo_line)
     }
     if (".is_cutoff_training_image" %in% names(df) && !isTRUE(input$tab4_include_cutoff_training %||% TRUE)) {
       lines <- c(lines, "Cutoff-optimization training images excluded.")
@@ -13643,124 +13763,3 @@ app <- shinyApp(ui, server)
 if (identical(environment(), globalenv()) && !interactive()) {
   runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
 }
-                                                                                                                                                                                                                                                                                                                                                                                        function(e) data.frame(message = "Preview unavailable for this table file.")
-          )
-        }, striped = TRUE, bordered = TRUE, spacing = "xs")
-        output[[paste0("report_preview_", gsub("[^A-Za-z0-9]+", "_", id))]] <- renderTable({
-          if (!step_card_is_visible(id)) return(NULL)
-          if (step_needs_module_refresh(id, runner, validation_runner)) invalidateLater(2000, session)
-          current_step <- find_step_by_id(current_steps(), id)
-          if (is.null(current_step)) return(NULL)
-          report_paths <- step_report_files(current_step$id, settings())
-          report_paths <- report_paths[file.exists(report_paths) & !dir.exists(report_paths)]
-          if (!length(report_paths)) return(NULL)
-          report_target <- report_paths[1]
-          ext <- tolower(tools::file_ext(report_target))
-          if (!ext %in% c("csv", "tsv")) return(NULL)
-          tryCatch(
-            if (ext == "tsv") utils::read.table(report_target, sep = "\t", header = TRUE, nrows = 8, stringsAsFactors = FALSE, check.names = FALSE)
-            else utils::read.csv(report_target, nrows = 8, stringsAsFactors = FALSE, check.names = FALSE),
-            error = function(e) data.frame(message = "Preview unavailable for this report file.")
-          )
-        }, striped = TRUE, bordered = TRUE, spacing = "xs")
-      })
-    }
-  })
-
-  for (step_id in setdiff(all_step_ids, "manual")) {
-    local({
-      id <- step_id
-      observeEvent(input[[paste0("run_", id)]], {
-        if (identical(id, "optimize")) {
-          persist_optimization_scoring_mode(announce = TRUE)
-        }
-        current_step <- Filter(function(x) identical(x$id, id), step_specs(settings(), input))[[1]]
-        prereq_issues <- step_prerequisite_issues(current_step, settings())
-        if (length(prereq_issues)) {
-          show_prerequisite_modal(current_step, prereq_issues)
-          return()
-        }
-        integrity <- step_integrity_check(current_step, settings())
-        if (identical(integrity$state, "partial")) {
-          pending_step(list(step = current_step, runtime = input$runtime_choice, integrity = integrity))
-          showModal(modalDialog(
-            title = paste("Partial output detected for", current_step$title),
-            easyClose = TRUE,
-            modal_top_close(),
-            tags$p(integrity$summary),
-            if (length(integrity$details)) tags$ul(lapply(integrity$details, tags$li)),
-            if (length(integrity$dropouts)) tags$p(sprintf("%s dropout item(s) are currently detected.", length(integrity$dropouts))),
-            tags$p("Choose whether to continue from the current partial state, retry only the missing items when supported, or delete this step's outputs and regenerate them fresh."),
-            footer = tagList(
-              actionButton("partial_continue_btn", "Continue with existing partial outputs"),
-              if (supports_dropout_retry(current_step$id, integrity)) actionButton("partial_retry_btn", "Retry only the detected dropouts", class = "btn-primary"),
-              actionButton("partial_regenerate_btn", "Delete outputs and regenerate fresh", class = "btn-danger")
-            )
-          ))
-        } else {
-          run_step_now(current_step, input$runtime_choice)
-        }
-      }, ignoreInit = TRUE)
-
-      observeEvent(input[[paste0("retry_dropouts_", gsub("[^A-Za-z0-9]+", "_", id))]], {
-        current_step <- Filter(function(x) identical(x$id, id), step_specs(settings(), input))[[1]]
-        integrity <- step_integrity_check(current_step, settings())
-        retry_step <- build_dropout_retry_step(current_step, integrity, input$runtime_choice)
-        if (is.null(retry_step)) {
-          showNotification("This step does not currently support retrying only the missing items.", type = "warning")
-        } else {
-          run_step_now(retry_step, input$runtime_choice)
-        }
-      }, ignoreInit = TRUE)
-    })
-  }
-
-  observeEvent(input$clear_log_btn, log_lines(character()))
-
-  output$log_output <- renderText({
-    invalidateLater(1000, session)
-    if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-      file_text <- tryCatch(paste(utils::tail(readLines(runner$log_file, warn = FALSE), 200), collapse = "\n"), error = function(e) "")
-      prefix <- paste(log_lines(), collapse = "\n")
-      trimws(paste(prefix, file_text, sep = if (nzchar(prefix) && nzchar(file_text)) "\n" else ""))
-    } else {
-      paste(log_lines(), collapse = "\n")
-    }
-  })
-
-  output$download_history_btn <- downloadHandler(
-    filename = function() paste0("command_history_", format(Sys.Date()), ".csv"),
-    content = function(file) {
-      hist <- history_df()
-      write.csv(hist, file, row.names = FALSE)
-    }
-  )
-
-  output$download_live_log_btn <- downloadHandler(
-    filename = function() paste0("current_run_log_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".txt"),
-    content = function(file) {
-      if (runner$active && !is.null(runner$log_file) && file.exists(runner$log_file)) {
-        file.copy(runner$log_file, file, overwrite = TRUE)
-      } else {
-        writeLines(log_lines(), file)
-      }
-    }
-  )
-
-  output$download_saved_log_btn <- downloadHandler(
-    filename = function() {
-      paste0("saved_run_log_", format(Sys.Date()), ".txt")
-    },
-    content = function(file) {
-      req(nzchar(input$saved_log_choice))
-      file.copy(input$saved_log_choice, file, overwrite = TRUE)
-    }
-  )
-}
-
-app <- shinyApp(ui, server)
-
-if (identical(environment(), globalenv()) && !interactive()) {
-  runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
-}
-                                                                                                                                                                                                                                  
