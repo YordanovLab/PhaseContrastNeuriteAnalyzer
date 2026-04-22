@@ -4734,6 +4734,7 @@ server <- function(input, output, session) {
     group <- snapshot_value(snapshot, "generalization_plot_group", "")
     group2 <- snapshot_value(snapshot, "generalization_plot_group2", "")
     color_by <- snapshot_value(snapshot, "generalization_plot_color_by", "__group__")
+    y_max <- parse_generalization_plot_ymax(snapshot_value(snapshot, "generalization_plot_ymax", ""))
     if (!nzchar(var) || !var %in% names(df) || !nzchar(group) || !group %in% names(df)) return(FALSE)
     df$.y <- suppressWarnings(as.numeric(df[[var]]))
     y_label <- recipe_axis_label(style, "y_label", plot_display_label(var, width = 36))
@@ -4773,7 +4774,11 @@ server <- function(input, output, session) {
     )
     on.exit(par(op), add = TRUE)
     ylim <- range(c(0, df$.y), na.rm = TRUE)
-    if (!is.finite(diff(ylim)) || diff(ylim) == 0) ylim <- ylim + c(-0.5, 0.5)
+    if (is.finite(y_max)) {
+      ylim <- c(0, y_max)
+    } else if (!is.finite(diff(ylim)) || diff(ylim) == 0) {
+      ylim <- ylim + c(-0.5, 0.5)
+    }
     xlim <- c(0.5, length(levels_x) + 0.5)
     for (facet_label in facet_levels) {
       panel_df <- df[as.character(df$.facet) == facet_label, , drop = FALSE]
@@ -10688,6 +10693,11 @@ server <- function(input, output, session) {
     scope
   }
 
+  parse_generalization_plot_ymax <- function(x) {
+    val <- suppressWarnings(as.numeric(x %||% NA))
+    if (length(val) && is.finite(val) && val > 0) val[[1]] else NA_real_
+  }
+
   generalization_group_plot_data <- reactive({
     df <- tab4_filtered_table()
     var <- input$generalization_plot_variable %||% ""
@@ -10695,6 +10705,7 @@ server <- function(input, output, session) {
     group <- input$generalization_plot_group %||% ""
     group2 <- input$generalization_plot_group2 %||% ""
     color_by <- input$generalization_plot_color_by %||% "__group__"
+    y_max <- parse_generalization_plot_ymax(input$generalization_plot_ymax)
     if (!nrow(df) || !var %in% names(df) || !group %in% names(df)) {
       return(list(ok = FALSE, message = "Select a saved/generalized table, variable, and grouping feature."))
     }
@@ -10752,7 +10763,8 @@ server <- function(input, output, session) {
       display_levels_x = display_levels_x,
       color_source = color_source,
       color_source_label = color_source_label,
-      color_is_numeric = color_is_numeric
+      color_is_numeric = color_is_numeric,
+      y_max = y_max
     )
   })
 
@@ -11142,6 +11154,7 @@ server <- function(input, output, session) {
       selectInput("generalization_plot_group", "Group by metadata/model feature", choices = groups, selected = selected_group),
       selectInput("generalization_plot_group2", "Optional second grouping feature", choices = c("None" = "", groups), selected = selected_group2),
       selectInput("generalization_plot_color_by", "Color dots/bars by", choices = c("Same as x-axis group" = "__group__", unique(c(nums, groups))), selected = selected_color),
+      textInput("generalization_plot_ymax", "Optional y-axis maximum tick/value", value = input$generalization_plot_ymax %||% ""),
       tags$hr(),
       tags$h5("Optional vertical faceting / stratification"),
       selectInput("generalization_plot_facet_by", "Facet/split by secondary variable", choices = facet_choices, selected = selected_facet),
@@ -11285,6 +11298,7 @@ server <- function(input, output, session) {
     color_source <- prep$color_source
     color_source_label <- prep$color_source_label
     color_is_numeric <- prep$color_is_numeric
+    y_max <- prep$y_max
     facet_levels <- levels(droplevels(df$.facet))
     if (!length(facet_levels)) facet_levels <- unique(as.character(df$.facet))
     n_panels <- length(facet_levels)
@@ -11294,7 +11308,11 @@ server <- function(input, output, session) {
     )
     on.exit(par(op), add = TRUE)
     ylim <- range(c(0, df$.y), na.rm = TRUE)
-    if (!is.finite(diff(ylim)) || diff(ylim) == 0) ylim <- ylim + c(-0.5, 0.5)
+    if (is.finite(y_max)) {
+      ylim <- c(0, y_max)
+    } else if (!is.finite(diff(ylim)) || diff(ylim) == 0) {
+      ylim <- ylim + c(-0.5, 0.5)
+    }
     xlim <- c(0.5, length(levels_x) + 0.5)
     for (facet_label in facet_levels) {
       panel_df <- df[as.character(df$.facet) == facet_label, , drop = FALSE]
@@ -13763,4 +13781,3 @@ app <- shinyApp(ui, server)
 if (identical(environment(), globalenv()) && !interactive()) {
   runApp(app, host = "127.0.0.1", port = 3838, launch.browser = TRUE)
 }
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
