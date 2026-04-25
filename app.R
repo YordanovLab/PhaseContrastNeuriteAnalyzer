@@ -4734,6 +4734,8 @@ server <- function(input, output, session) {
     group <- snapshot_value(snapshot, "generalization_plot_group", "")
     group2 <- snapshot_value(snapshot, "generalization_plot_group2", "")
     color_by <- snapshot_value(snapshot, "generalization_plot_color_by", "__group__")
+    bar_summary_metric <- snapshot_value(snapshot, "generalization_plot_bar_summary", "mean")
+    bar_summary_label <- generalization_bar_summary_label(bar_summary_metric)
     y_max <- parse_generalization_plot_ymax(snapshot_value(snapshot, "generalization_plot_ymax", ""))
     palette_min <- parse_generalization_palette_limit(snapshot_value(snapshot, "generalization_plot_palette_min", ""))
     palette_max <- parse_generalization_palette_limit(snapshot_value(snapshot, "generalization_plot_palette_max", ""))
@@ -4791,7 +4793,11 @@ server <- function(input, output, session) {
       jitter_x <- x + runif(length(x), -0.18, 0.18)
       if (color_is_numeric) {
         point_cols <- continuous_palette(panel_df[[color_source]], limits = palette_limits)
-        bar_color_values <- tapply(suppressWarnings(as.numeric(panel_df[[color_source]])), panel_df$.group, mean, na.rm = TRUE)
+        bar_color_values <- tapply(
+          suppressWarnings(as.numeric(panel_df[[color_source]])),
+          panel_df$.group,
+          function(v) generalization_bar_summary_value(v, bar_summary_metric)
+        )
         bar_cols <- continuous_palette(bar_color_values, limits = palette_limits)
         names(bar_cols) <- names(bar_color_values)
       } else {
@@ -4821,7 +4827,7 @@ server <- function(input, output, session) {
         cex.axis = style_num(style, "x_tick_size", 9) / 9,
         cex.main = style_num(style, "title_size", 18) / 18
       )
-      means <- tapply(panel_df$.y, panel_df$.group, mean, na.rm = TRUE)
+      means <- tapply(panel_df$.y, panel_df$.group, function(v) generalization_bar_summary_value(v, bar_summary_metric))
       bar_centers <- seq_along(levels_x)
       draw_idx <- which(is.finite(means[levels_x]))
       bar_cols_full <- rep("#8fb8de", length(levels_x))
@@ -4835,9 +4841,9 @@ server <- function(input, output, session) {
       if (!apply_facets || identical(facet_label, facet_levels[[1]])) {
         if (color_is_numeric) {
           draw_continuous_palette_legend(plot_display_label(color_source, width = 28, multiline = FALSE), panel_df[[color_source]], limits = palette_limits)
-          legend("topright", legend = "Group mean", pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = style_num(style, "legend_size", 9) / 11)
+          legend("topright", legend = bar_summary_label, pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = style_num(style, "legend_size", 9) / 11)
         } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
-          legend("topright", legend = c(levels(color_factor), "Group mean"), pch = c(rep(19, length(levels(color_factor))), 23), pt.bg = c(rep(NA, length(levels(color_factor))), "#fbf1d7"), col = c(pal, "#173f35"), bty = "n", cex = style_num(style, "legend_size", 9) / 12)
+          legend("topright", legend = c(levels(color_factor), bar_summary_label), pch = c(rep(19, length(levels(color_factor))), 23), pt.bg = c(rep(NA, length(levels(color_factor))), "#fbf1d7"), col = c(pal, "#173f35"), bty = "n", cex = style_num(style, "legend_size", 9) / 12)
         }
       }
     }
@@ -10706,6 +10712,29 @@ server <- function(input, output, session) {
     if (length(val) && is.finite(val)) val[[1]] else NA_real_
   }
 
+  generalization_bar_summary_value <- function(x, metric = "mean") {
+    vals <- suppressWarnings(as.numeric(x))
+    vals <- vals[is.finite(vals)]
+    if (!length(vals)) return(NA_real_)
+    metric <- metric %||% "mean"
+    if (identical(metric, "median")) {
+      return(stats::median(vals, na.rm = TRUE))
+    }
+    if (identical(metric, "trimmed_mean")) {
+      return(mean(vals, trim = 0.1, na.rm = TRUE))
+    }
+    mean(vals, na.rm = TRUE)
+  }
+
+  generalization_bar_summary_label <- function(metric = "mean") {
+    switch(
+      metric %||% "mean",
+      "median" = "Group median",
+      "trimmed_mean" = "Group trimmed mean (10%)",
+      "Group mean"
+    )
+  }
+
   generalization_group_plot_data <- reactive({
     df <- tab4_filtered_table()
     var <- input$generalization_plot_variable %||% ""
@@ -10713,6 +10742,7 @@ server <- function(input, output, session) {
     group <- input$generalization_plot_group %||% ""
     group2 <- input$generalization_plot_group2 %||% ""
     color_by <- input$generalization_plot_color_by %||% "__group__"
+    bar_summary_metric <- input$generalization_plot_bar_summary %||% "mean"
     y_max <- parse_generalization_plot_ymax(input$generalization_plot_ymax)
     palette_min <- parse_generalization_palette_limit(input$generalization_plot_palette_min)
     palette_max <- parse_generalization_palette_limit(input$generalization_plot_palette_max)
@@ -10765,6 +10795,8 @@ server <- function(input, output, session) {
       group = group,
       group2 = group2,
       color_by = color_by,
+      bar_summary_metric = bar_summary_metric,
+      bar_summary_label = generalization_bar_summary_label(bar_summary_metric),
       y_label = y_label,
       plot_title_var = plot_title_var,
       facet_split = facet_split,
@@ -11166,6 +11198,16 @@ server <- function(input, output, session) {
       selectInput("generalization_plot_group", "Group by metadata/model feature", choices = groups, selected = selected_group),
       selectInput("generalization_plot_group2", "Optional second grouping feature", choices = c("None" = "", groups), selected = selected_group2),
       selectInput("generalization_plot_color_by", "Color dots/bars by", choices = c("Same as x-axis group" = "__group__", unique(c(nums, groups))), selected = selected_color),
+      selectInput(
+        "generalization_plot_bar_summary",
+        "Group-level bar summary metric",
+        choices = c(
+          "Mean (average)" = "mean",
+          "Median (more robust to skew/outliers)" = "median",
+          "Trimmed mean, 10% (balances robustness and continuity)" = "trimmed_mean"
+        ),
+        selected = input$generalization_plot_bar_summary %||% "mean"
+      ),
       textInput("generalization_plot_ymax", "Optional y-axis maximum tick/value", value = input$generalization_plot_ymax %||% ""),
       if (isTRUE(selected_color != "__group__") &&
           selected_color %in% names(df) &&
@@ -11318,6 +11360,8 @@ server <- function(input, output, session) {
     color_source <- prep$color_source
     color_source_label <- prep$color_source_label
     color_is_numeric <- prep$color_is_numeric
+    bar_summary_metric <- prep$bar_summary_metric %||% "mean"
+    bar_summary_label <- prep$bar_summary_label %||% generalization_bar_summary_label(bar_summary_metric)
     y_max <- prep$y_max
     palette_limits <- if (is.finite(prep$palette_min) &&
                           is.finite(prep$palette_max) &&
@@ -11349,7 +11393,11 @@ server <- function(input, output, session) {
       jitter_x <- x + runif(length(x), -0.18, 0.18)
       if (color_is_numeric) {
         point_cols <- continuous_palette(panel_df[[color_source]], limits = palette_limits)
-        bar_color_values <- tapply(suppressWarnings(as.numeric(panel_df[[color_source]])), panel_df$.group, mean, na.rm = TRUE)
+        bar_color_values <- tapply(
+          suppressWarnings(as.numeric(panel_df[[color_source]])),
+          panel_df$.group,
+          function(v) generalization_bar_summary_value(v, bar_summary_metric)
+        )
         bar_cols <- continuous_palette(bar_color_values, limits = palette_limits)
         names(bar_cols) <- names(bar_color_values)
       } else {
@@ -11362,7 +11410,7 @@ server <- function(input, output, session) {
       }
       main_title <- if (apply_facets) paste(plot_title_var, "|", plot_display_label(facet_split$variable, width = 32, multiline = FALSE), "=", facet_label) else paste(plot_display_label(plot_title_var, width = 52, multiline = FALSE), "by", plot_display_label(group, width = 32, multiline = FALSE))
       plot(jitter_x, panel_df$.y, xaxt = "n", xlab = "", ylab = y_label, pch = 19, col = point_cols, xlim = xlim, ylim = ylim, main = main_title)
-      means <- tapply(panel_df$.y, panel_df$.group, mean, na.rm = TRUE)
+      means <- tapply(panel_df$.y, panel_df$.group, function(v) generalization_bar_summary_value(v, bar_summary_metric))
       bar_centers <- seq_along(levels_x)
       draw_idx <- which(is.finite(means[levels_x]))
       bar_cols_full <- rep("#8fb8de", length(levels_x))
@@ -11383,9 +11431,9 @@ server <- function(input, output, session) {
       if (!apply_facets || identical(facet_label, facet_levels[[1]])) {
         if (color_is_numeric) {
           draw_continuous_palette_legend(color_source_label, panel_df[[color_source]], limits = palette_limits)
-          legend("topright", legend = "Group mean", pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = 0.75)
+          legend("topright", legend = bar_summary_label, pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = 0.75)
         } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
-          legend("topright", legend = c(levels(color_factor), "Group mean"), pch = c(rep(19, length(levels(color_factor))), 23), pt.bg = c(rep(NA, length(levels(color_factor))), "#fbf1d7"), col = c(pal, "#173f35"), bty = "n", cex = 0.7)
+          legend("topright", legend = c(levels(color_factor), bar_summary_label), pch = c(rep(19, length(levels(color_factor))), 23), pt.bg = c(rep(NA, length(levels(color_factor))), "#fbf1d7"), col = c(pal, "#173f35"), bty = "n", cex = 0.7)
         }
       }
     }
