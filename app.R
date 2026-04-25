@@ -4421,7 +4421,7 @@ server <- function(input, output, session) {
       }
       if (identical(plot_id, "contrast_variable_plot")) return(list(kind = "contrast", ranking = contrast_variable_ranking()))
       if (identical(plot_id, "generalization_grouped_plot") || identical(plot_id, "generalization_facet_helper_plot")) {
-        return(list(kind = "grouped_plot", filtered_table = tab4_filtered_table(), facet_split = tryCatch(build_generalization_facet_split(tab4_filtered_table()), error = function(e) list(ok = FALSE, message = conditionMessage(e)))))
+        return(list(kind = "grouped_plot", filtered_table = tab4_filtered_table(), source_table = tab4_source_table(), facet_split = tryCatch(build_generalization_facet_split(tab4_filtered_table()), error = function(e) list(ok = FALSE, message = conditionMessage(e)))))
       }
       if (identical(plot_id, "covariate_correlation_heatmap")) return(list(kind = "covariate_correlation", result = covariate_correlation_result()))
       if (grepl("^cutoff_", plot_id)) return(list(kind = "cutoff_review", cutoff_review = cutoff_review_data()))
@@ -4738,6 +4738,8 @@ server <- function(input, output, session) {
     bar_summary_label <- generalization_bar_summary_label(bar_summary_metric)
     bar_color_summary_metric <- snapshot_value(snapshot, "generalization_plot_bar_color_summary", "mean")
     bar_color_palette_scope <- snapshot_value(snapshot, "generalization_plot_bar_color_palette_scope", "displayed_dots")
+    dot_palette_scope <- snapshot_value(snapshot, "generalization_plot_dot_palette_scope", "full")
+    palette_reference_scope <- snapshot_value(snapshot, "generalization_plot_palette_reference_scope", "plotted_rows")
     y_max <- parse_generalization_plot_ymax(snapshot_value(snapshot, "generalization_plot_ymax", ""))
     palette_min <- parse_generalization_palette_limit(snapshot_value(snapshot, "generalization_plot_palette_min", ""))
     palette_max <- parse_generalization_palette_limit(snapshot_value(snapshot, "generalization_plot_palette_max", ""))
@@ -4771,13 +4773,18 @@ server <- function(input, output, session) {
     display_levels_x <- recipe_tick_labels(style, "x_tick_labels", plot_display_labels(gsub(" \\| ", " | ", levels_x), width = 22))
     color_source <- if (identical(color_by, "__group__") || !color_by %in% names(df)) group else color_by
     color_is_numeric <- color_source %in% names(df) && vector_is_numeric_like(df[[color_source]])
+    filtered_reference_df <- payload$filtered_table %||% df
+    source_reference_df <- payload$source_table %||% filtered_reference_df
     figure_palette_limits <- palette_limits
     if (color_is_numeric && is.null(figure_palette_limits)) {
-      raw_color_vals <- suppressWarnings(as.numeric(df[[color_source]]))
-      raw_color_vals <- raw_color_vals[is.finite(raw_color_vals)]
-      if (length(raw_color_vals)) {
-        figure_palette_limits <- range(raw_color_vals, na.rm = TRUE)
-      }
+      reference_values <- numeric_palette_reference_values(
+        color_source,
+        palette_reference_scope,
+        plotted_df = df,
+        filtered_df = filtered_reference_df,
+        source_df = source_reference_df
+      )
+      figure_palette_limits <- numeric_palette_auto_limits(reference_values, dot_palette_scope)
     }
     figure_bar_palette_limits <- figure_palette_limits
     if (color_is_numeric && identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) {
@@ -4820,7 +4827,7 @@ server <- function(input, output, session) {
           function(v) generalization_bar_summary_value(v, bar_color_summary_metric)
         )
         panel_palette_limits <- if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) figure_bar_palette_limits else figure_palette_limits
-        point_cols <- continuous_palette(panel_df[[color_source]], limits = if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) figure_palette_limits else panel_palette_limits)
+        point_cols <- continuous_palette(panel_df[[color_source]], limits = figure_palette_limits)
         bar_cols <- continuous_palette(bar_color_values, limits = panel_palette_limits)
         names(bar_cols) <- names(bar_color_values)
       } else {
@@ -4866,13 +4873,17 @@ server <- function(input, output, session) {
           draw_continuous_palette_legend(
             paste0(
               plot_display_label(color_source, width = 28, multiline = FALSE),
-              " (dots raw; bars ",
+              " (dots ",
+              numeric_dot_palette_scope_label(dot_palette_scope),
+              " from ",
+              numeric_palette_reference_short_label(palette_reference_scope),
+              "; bars ",
               generalization_bar_summary_descriptor(bar_color_summary_metric),
-              if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) "; legend uses all displayed grouped bar summaries" else "",
+              if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) "; separate bar scale" else "",
               ")"
             ),
-            if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) bar_color_values else panel_df[[color_source]],
-            limits = panel_palette_limits
+            panel_df[[color_source]],
+            limits = figure_palette_limits
           )
           legend("topright", legend = bar_summary_label, pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = style_num(style, "legend_size", 9) / 11)
         } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
@@ -9526,6 +9537,73 @@ server <- function(input, output, session) {
     cols[pmax(1, pmin(256, idx))]
   }
 
+  numeric_palette_auto_limits <- function(values, mode = "full") {
+    vals <- suppressWarnings(as.numeric(values))
+    vals <- vals[is.finite(vals)]
+    if (!length(vals)) return(NULL)
+    mode <- mode %||% "full"
+    probs <- switch(
+      mode,
+      "q01_q99" = c(0.01, 0.99),
+      "q05_q95" = c(0.05, 0.95),
+      "q10_q90" = c(0.10, 0.90),
+      c(0, 1)
+    )
+    rng <- if (identical(probs, c(0, 1))) {
+      range(vals, na.rm = TRUE)
+    } else {
+      suppressWarnings(as.numeric(stats::quantile(vals, probs = probs, na.rm = TRUE, names = FALSE, type = 7)))
+    }
+    if (length(rng) != 2 || !all(is.finite(rng))) return(NULL)
+    c(min(rng), max(rng))
+  }
+
+  numeric_dot_palette_scope_label <- function(mode = "full") {
+    switch(
+      mode %||% "full",
+      "q01_q99" = "1-99% scale",
+      "q05_q95" = "5-95% scale",
+      "q10_q90" = "10-90% scale",
+      "full reference range"
+    )
+  }
+
+  numeric_palette_reference_label <- function(scope = "plotted_rows") {
+    switch(
+      scope %||% "plotted_rows",
+      "shared_filtered_rows" = "all rows after shared Tab 4 filters",
+      "all_source_rows" = "full generalized table before shared Tab 4 filters",
+      "current plotted rows"
+    )
+  }
+
+  numeric_palette_reference_short_label <- function(scope = "plotted_rows") {
+    switch(
+      scope %||% "plotted_rows",
+      "shared_filtered_rows" = "shared-filter rows",
+      "all_source_rows" = "full table",
+      "plotted rows"
+    )
+  }
+
+  numeric_palette_reference_values <- function(color_source, reference_scope = "plotted_rows", plotted_df = NULL, filtered_df = NULL, source_df = NULL) {
+    reference_scope <- reference_scope %||% "plotted_rows"
+    ref_df <- switch(
+      reference_scope,
+      "shared_filtered_rows" = filtered_df,
+      "all_source_rows" = source_df,
+      plotted_df
+    )
+    if (!is.data.frame(ref_df) || !nrow(ref_df) || !nzchar(color_source %||% "") || !color_source %in% names(ref_df)) return(numeric())
+    vals <- suppressWarnings(as.numeric(ref_df[[color_source]]))
+    vals[is.finite(vals)]
+  }
+
+  format_numeric_palette_limit <- function(x) {
+    if (!length(x) || !is.finite(x)) return("")
+    format(signif(x, 7), scientific = FALSE, trim = TRUE)
+  }
+
   draw_continuous_palette_legend <- function(label, values, palette = "Viridis", limits = NULL) {
     values <- suppressWarnings(as.numeric(values))
     values <- values[is.finite(values)]
@@ -10786,7 +10864,9 @@ server <- function(input, output, session) {
     color_by <- input$generalization_plot_color_by %||% "__group__"
     bar_summary_metric <- input$generalization_plot_bar_summary %||% "mean"
     bar_color_summary_metric <- input$generalization_plot_bar_color_summary %||% "mean"
-    bar_color_palette_scope <- input$generalization_plot_bar_color_palette_scope %||% "displayed_dots"
+    bar_color_palette_scope <- input$generalization_plot_bar_color_palette_scope %||% "bar_summaries"
+    dot_palette_scope <- input$generalization_plot_dot_palette_scope %||% "q05_q95"
+    palette_reference_scope <- input$generalization_plot_palette_reference_scope %||% "shared_filtered_rows"
     y_max <- parse_generalization_plot_ymax(input$generalization_plot_ymax)
     palette_min <- parse_generalization_palette_limit(input$generalization_plot_palette_min)
     palette_max <- parse_generalization_palette_limit(input$generalization_plot_palette_max)
@@ -10844,6 +10924,8 @@ server <- function(input, output, session) {
       bar_color_summary_metric = bar_color_summary_metric,
       bar_color_summary_label = generalization_bar_summary_label(bar_color_summary_metric),
       bar_color_palette_scope = bar_color_palette_scope,
+      dot_palette_scope = dot_palette_scope,
+      palette_reference_scope = palette_reference_scope,
       y_label = y_label,
       plot_title_var = plot_title_var,
       facet_split = facet_split,
@@ -10858,6 +10940,77 @@ server <- function(input, output, session) {
       palette_max = palette_max
     )
   })
+
+  generalization_palette_limit_result <- reactive({
+    prep <- generalization_group_plot_data()
+    if (!isTRUE(prep$ok) || !isTRUE(prep$color_is_numeric)) {
+      return(list(ok = FALSE, message = "Select a numeric color variable to compute palette limits."))
+    }
+    reference_values <- numeric_palette_reference_values(
+      prep$color_source,
+      prep$palette_reference_scope %||% "shared_filtered_rows",
+      plotted_df = prep$df,
+      filtered_df = tab4_filtered_table(),
+      source_df = tab4_source_table()
+    )
+    auto_limits <- numeric_palette_auto_limits(reference_values, prep$dot_palette_scope %||% "q05_q95")
+    manual_limits <- if (is.finite(prep$palette_min) && is.finite(prep$palette_max) && prep$palette_max > prep$palette_min) {
+      c(prep$palette_min, prep$palette_max)
+    } else {
+      NULL
+    }
+    if (is.null(auto_limits)) {
+      return(list(ok = FALSE, message = "No finite numeric color values were available in the selected reference rows."))
+    }
+    list(
+      ok = TRUE,
+      reference_n = length(reference_values),
+      reference_scope = prep$palette_reference_scope %||% "shared_filtered_rows",
+      dot_palette_scope = prep$dot_palette_scope %||% "q05_q95",
+      auto_limits = auto_limits,
+      manual_limits = manual_limits,
+      color_source = prep$color_source
+    )
+  })
+
+  output$generalization_palette_limits_info_ui <- renderUI({
+    res <- generalization_palette_limit_result()
+    if (!isTRUE(res$ok)) return(tags$p(class = "helper-text", res$message))
+    auto_text <- sprintf(
+      "Suggested automatic scale for %s: %s to %s, based on %s finite value(s) from %s using %s.",
+      plot_display_label(res$color_source, width = 32, multiline = FALSE),
+      format_numeric_palette_limit(res$auto_limits[[1]]),
+      format_numeric_palette_limit(res$auto_limits[[2]]),
+      res$reference_n,
+      numeric_palette_reference_label(res$reference_scope),
+      numeric_dot_palette_scope_label(res$dot_palette_scope)
+    )
+    manual_text <- if (!is.null(res$manual_limits)) {
+      sprintf(
+        "Manual locked scale is active: %s to %s.",
+        format_numeric_palette_limit(res$manual_limits[[1]]),
+        format_numeric_palette_limit(res$manual_limits[[2]])
+      )
+    } else {
+      "Manual scale is not locked; the automatic rule above is currently used."
+    }
+    tags$div(
+      class = "metric-info-box",
+      tags$p(auto_text),
+      tags$p(manual_text)
+    )
+  })
+
+  observeEvent(input$generalization_lock_palette_limits_btn, {
+    res <- generalization_palette_limit_result()
+    if (!isTRUE(res$ok) || is.null(res$auto_limits)) {
+      showNotification(res$message %||% "No numeric palette limits are available to lock.", type = "warning", duration = 7)
+      return()
+    }
+    updateTextInput(session, "generalization_plot_palette_min", value = format_numeric_palette_limit(res$auto_limits[[1]]))
+    updateTextInput(session, "generalization_plot_palette_max", value = format_numeric_palette_limit(res$auto_limits[[2]]))
+    showNotification("Locked the current automatic numeric color scale into the manual min/max boxes. Reuse these values for comparable plot series.", type = "message", duration = 8)
+  }, ignoreInit = TRUE)
 
   generalization_group_stats_table_title <- reactive({
     prep <- generalization_group_plot_data()
@@ -11274,11 +11427,35 @@ server <- function(input, output, session) {
             "generalization_plot_bar_color_palette_scope",
             "Numeric bar color palette scope",
             choices = c(
-              "Use one shared scale from all displayed dot values (strict dot-bar comparability)" = "displayed_dots",
-              "Use one shared scale from all displayed grouped bar summaries (stronger bar-to-bar separation)" = "bar_summaries"
+              "Use grouped bar-summary scale (recommended; stronger bar-to-bar separation)" = "bar_summaries",
+              "Use same scale as dots (strict dot-bar comparability; can flatten bars)" = "displayed_dots"
             ),
-            selected = input$generalization_plot_bar_color_palette_scope %||% "displayed_dots"
+            selected = input$generalization_plot_bar_color_palette_scope %||% "bar_summaries"
           ),
+          selectInput(
+            "generalization_plot_dot_palette_scope",
+            "Numeric dot color auto-scale",
+            choices = c(
+              "Robust 5-95% reference range (recommended for skew/outliers)" = "q05_q95",
+              "Robust 1-99% reference range" = "q01_q99",
+              "Robust 10-90% reference range (strongest visual spread)" = "q10_q90",
+              "Full reference range" = "full"
+            ),
+            selected = input$generalization_plot_dot_palette_scope %||% "q05_q95"
+          ),
+          selectInput(
+            "generalization_plot_palette_reference_scope",
+            "Reference rows for numeric color scale",
+            choices = c(
+              "All rows after shared Tab 4 filters (recommended for comparable plot series)" = "shared_filtered_rows",
+              "Current plotted rows only (best local contrast for one plot)" = "plotted_rows",
+              "Full generalized table before shared Tab 4 filters (global comparison)" = "all_source_rows"
+            ),
+            selected = input$generalization_plot_palette_reference_scope %||% "shared_filtered_rows"
+          ),
+          tags$p(class = "metric-info-box", "Dot colors always use individual image values. Robust auto-scaling clips only the color scale, not the data: values outside the chosen quantile range are saturated to the palette endpoints. Manual minimum/maximum values override this selector."),
+          uiOutput("generalization_palette_limits_info_ui"),
+          actionButton("generalization_lock_palette_limits_btn", "Lock Current Auto Color Scale Into Min/Max", class = "btn btn-default"),
           textInput("generalization_plot_palette_min", "Optional numeric palette minimum", value = input$generalization_plot_palette_min %||% ""),
           textInput("generalization_plot_palette_max", "Optional numeric palette maximum", value = input$generalization_plot_palette_max %||% "")
         )
@@ -11430,7 +11607,9 @@ server <- function(input, output, session) {
     bar_summary_label <- prep$bar_summary_label %||% generalization_bar_summary_label(bar_summary_metric)
     bar_color_summary_metric <- prep$bar_color_summary_metric %||% "mean"
     bar_color_summary_label <- prep$bar_color_summary_label %||% generalization_bar_summary_label(bar_color_summary_metric)
-    bar_color_palette_scope <- prep$bar_color_palette_scope %||% "displayed_dots"
+    bar_color_palette_scope <- prep$bar_color_palette_scope %||% "bar_summaries"
+    dot_palette_scope <- prep$dot_palette_scope %||% "q05_q95"
+    palette_reference_scope <- prep$palette_reference_scope %||% "shared_filtered_rows"
     y_max <- prep$y_max
     palette_limits <- if (is.finite(prep$palette_min) &&
                           is.finite(prep$palette_max) &&
@@ -11441,11 +11620,14 @@ server <- function(input, output, session) {
     }
     figure_palette_limits <- palette_limits
     if (color_is_numeric && is.null(figure_palette_limits)) {
-      raw_color_vals <- suppressWarnings(as.numeric(df[[color_source]]))
-      raw_color_vals <- raw_color_vals[is.finite(raw_color_vals)]
-      if (length(raw_color_vals)) {
-        figure_palette_limits <- range(raw_color_vals, na.rm = TRUE)
-      }
+      reference_values <- numeric_palette_reference_values(
+        color_source,
+        palette_reference_scope,
+        plotted_df = df,
+        filtered_df = tab4_filtered_table(),
+        source_df = tab4_source_table()
+      )
+      figure_palette_limits <- numeric_palette_auto_limits(reference_values, dot_palette_scope)
     }
     figure_bar_palette_limits <- figure_palette_limits
     if (color_is_numeric && identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) {
@@ -11487,7 +11669,7 @@ server <- function(input, output, session) {
           function(v) generalization_bar_summary_value(v, bar_color_summary_metric)
         )
         panel_palette_limits <- if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) figure_bar_palette_limits else figure_palette_limits
-        point_cols <- continuous_palette(panel_df[[color_source]], limits = if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) figure_palette_limits else panel_palette_limits)
+        point_cols <- continuous_palette(panel_df[[color_source]], limits = figure_palette_limits)
         bar_cols <- continuous_palette(bar_color_values, limits = panel_palette_limits)
         names(bar_cols) <- names(bar_color_values)
       } else {
@@ -11523,13 +11705,17 @@ server <- function(input, output, session) {
           draw_continuous_palette_legend(
             paste0(
               color_source_label,
-              " (dots raw; bars ",
+              " (dots ",
+              numeric_dot_palette_scope_label(dot_palette_scope),
+              " from ",
+              numeric_palette_reference_short_label(palette_reference_scope),
+              "; bars ",
               generalization_bar_summary_descriptor(bar_color_summary_metric),
-              if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) "; legend uses all displayed grouped bar summaries" else "",
+              if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) "; separate bar scale" else "",
               ")"
             ),
-            if (identical(bar_color_palette_scope, "bar_summaries") && is.null(palette_limits)) bar_color_values else panel_df[[color_source]],
-            limits = panel_palette_limits
+            panel_df[[color_source]],
+            limits = figure_palette_limits
           )
           legend("topright", legend = bar_summary_label, pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = 0.75)
         } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
