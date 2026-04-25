@@ -4735,6 +4735,9 @@ server <- function(input, output, session) {
     group2 <- snapshot_value(snapshot, "generalization_plot_group2", "")
     color_by <- snapshot_value(snapshot, "generalization_plot_color_by", "__group__")
     y_max <- parse_generalization_plot_ymax(snapshot_value(snapshot, "generalization_plot_ymax", ""))
+    palette_min <- parse_generalization_palette_limit(snapshot_value(snapshot, "generalization_plot_palette_min", ""))
+    palette_max <- parse_generalization_palette_limit(snapshot_value(snapshot, "generalization_plot_palette_max", ""))
+    palette_limits <- if (is.finite(palette_min) && is.finite(palette_max) && palette_max > palette_min) c(palette_min, palette_max) else NULL
     if (!nzchar(var) || !var %in% names(df) || !nzchar(group) || !group %in% names(df)) return(FALSE)
     df$.y <- suppressWarnings(as.numeric(df[[var]]))
     y_label <- recipe_axis_label(style, "y_label", plot_display_label(var, width = 36))
@@ -4787,9 +4790,9 @@ server <- function(input, output, session) {
       set.seed(42)
       jitter_x <- x + runif(length(x), -0.18, 0.18)
       if (color_is_numeric) {
-        point_cols <- continuous_palette(panel_df[[color_source]])
+        point_cols <- continuous_palette(panel_df[[color_source]], limits = palette_limits)
         bar_color_values <- tapply(suppressWarnings(as.numeric(panel_df[[color_source]])), panel_df$.group, mean, na.rm = TRUE)
-        bar_cols <- continuous_palette(bar_color_values)
+        bar_cols <- continuous_palette(bar_color_values, limits = palette_limits)
         names(bar_cols) <- names(bar_color_values)
       } else {
         color_factor <- if (color_source %in% names(panel_df)) ordered_factor_for_plot(panel_df[[color_source]]) else panel_df$.group
@@ -4831,7 +4834,7 @@ server <- function(input, output, session) {
       axis(1, at = seq_along(levels_x), labels = display_levels_x, las = style_num(style, "x_tick_angle", 2), cex.axis = if (n_panels > 1) style_num(style, "x_tick_size", 9) / 14 else style_num(style, "x_tick_size", 9) / 12)
       if (!apply_facets || identical(facet_label, facet_levels[[1]])) {
         if (color_is_numeric) {
-          draw_continuous_palette_legend(plot_display_label(color_source, width = 28, multiline = FALSE), panel_df[[color_source]])
+          draw_continuous_palette_legend(plot_display_label(color_source, width = 28, multiline = FALSE), panel_df[[color_source]], limits = palette_limits)
           legend("topright", legend = "Group mean", pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = style_num(style, "legend_size", 9) / 11)
         } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
           legend("topright", legend = c(levels(color_factor), "Group mean"), pch = c(rep(19, length(levels(color_factor))), 23), pt.bg = c(rep(NA, length(levels(color_factor))), "#fbf1d7"), col = c(pal, "#173f35"), bty = "n", cex = style_num(style, "legend_size", 9) / 12)
@@ -9473,21 +9476,21 @@ server <- function(input, output, session) {
     factor(labels, levels = level_df$label[level_order])
   }
 
-  continuous_palette <- function(x, palette = "Viridis") {
+  continuous_palette <- function(x, palette = "Viridis", limits = NULL) {
     x <- suppressWarnings(as.numeric(x))
     cols <- grDevices::hcl.colors(256, palette)
     if (!length(x) || !any(is.finite(x))) return(rep("#8aa0a8", length(x)))
-    rng <- range(x, na.rm = TRUE)
+    rng <- if (length(limits) == 2 && all(is.finite(limits))) c(min(limits), max(limits)) else range(x, na.rm = TRUE)
     if (!is.finite(diff(rng)) || diff(rng) == 0) return(rep(cols[[128]], length(x)))
     idx <- round(1 + 255 * (x - rng[[1]]) / diff(rng))
     idx[!is.finite(idx)] <- 1
     cols[pmax(1, pmin(256, idx))]
   }
 
-  draw_continuous_palette_legend <- function(label, values, palette = "Viridis") {
+  draw_continuous_palette_legend <- function(label, values, palette = "Viridis", limits = NULL) {
     values <- suppressWarnings(as.numeric(values))
     values <- values[is.finite(values)]
-    if (!length(values)) return(invisible(NULL))
+    if (!length(values) && !(length(limits) == 2 && all(is.finite(limits)))) return(invisible(NULL))
     usr <- par("usr")
     cols <- grDevices::hcl.colors(80, palette)
     x0 <- usr[[2]] + 0.04 * diff(usr[1:2])
@@ -9498,7 +9501,7 @@ server <- function(input, output, session) {
     on.exit(par(old_xpd), add = TRUE)
     rasterImage(as.raster(matrix(rev(cols), ncol = 1)), x0, y0, x1, y1)
     rect(x0, y0, x1, y1, border = "#333333")
-    rng <- range(values)
+    rng <- if (length(limits) == 2 && all(is.finite(limits))) c(min(limits), max(limits)) else range(values)
     text(x1 + 0.01 * diff(usr[1:2]), y1, labels = sprintf("high %.3g", rng[[2]]), adj = c(0, 0.5), cex = 0.72)
     text(x1 + 0.01 * diff(usr[1:2]), y0, labels = sprintf("low %.3g", rng[[1]]), adj = c(0, 0.5), cex = 0.72)
     text((x0 + x1) / 2, y1 + 0.08 * diff(usr[3:4]), labels = label, adj = c(0.5, 0.5), cex = 0.72)
@@ -10698,6 +10701,11 @@ server <- function(input, output, session) {
     if (length(val) && is.finite(val) && val > 0) val[[1]] else NA_real_
   }
 
+  parse_generalization_palette_limit <- function(x) {
+    val <- suppressWarnings(as.numeric(x %||% NA))
+    if (length(val) && is.finite(val)) val[[1]] else NA_real_
+  }
+
   generalization_group_plot_data <- reactive({
     df <- tab4_filtered_table()
     var <- input$generalization_plot_variable %||% ""
@@ -10706,6 +10714,8 @@ server <- function(input, output, session) {
     group2 <- input$generalization_plot_group2 %||% ""
     color_by <- input$generalization_plot_color_by %||% "__group__"
     y_max <- parse_generalization_plot_ymax(input$generalization_plot_ymax)
+    palette_min <- parse_generalization_palette_limit(input$generalization_plot_palette_min)
+    palette_max <- parse_generalization_palette_limit(input$generalization_plot_palette_max)
     if (!nrow(df) || !var %in% names(df) || !group %in% names(df)) {
       return(list(ok = FALSE, message = "Select a saved/generalized table, variable, and grouping feature."))
     }
@@ -10764,7 +10774,9 @@ server <- function(input, output, session) {
       color_source = color_source,
       color_source_label = color_source_label,
       color_is_numeric = color_is_numeric,
-      y_max = y_max
+      y_max = y_max,
+      palette_min = palette_min,
+      palette_max = palette_max
     )
   })
 
@@ -11155,6 +11167,14 @@ server <- function(input, output, session) {
       selectInput("generalization_plot_group2", "Optional second grouping feature", choices = c("None" = "", groups), selected = selected_group2),
       selectInput("generalization_plot_color_by", "Color dots/bars by", choices = c("Same as x-axis group" = "__group__", unique(c(nums, groups))), selected = selected_color),
       textInput("generalization_plot_ymax", "Optional y-axis maximum tick/value", value = input$generalization_plot_ymax %||% ""),
+      if (isTRUE(selected_color != "__group__") &&
+          selected_color %in% names(df) &&
+          vector_is_numeric_like(df[[selected_color]])) {
+        tagList(
+          textInput("generalization_plot_palette_min", "Optional numeric palette minimum", value = input$generalization_plot_palette_min %||% ""),
+          textInput("generalization_plot_palette_max", "Optional numeric palette maximum", value = input$generalization_plot_palette_max %||% "")
+        )
+      },
       tags$hr(),
       tags$h5("Optional vertical faceting / stratification"),
       selectInput("generalization_plot_facet_by", "Facet/split by secondary variable", choices = facet_choices, selected = selected_facet),
@@ -11299,6 +11319,13 @@ server <- function(input, output, session) {
     color_source_label <- prep$color_source_label
     color_is_numeric <- prep$color_is_numeric
     y_max <- prep$y_max
+    palette_limits <- if (is.finite(prep$palette_min) &&
+                          is.finite(prep$palette_max) &&
+                          prep$palette_max > prep$palette_min) {
+      c(prep$palette_min, prep$palette_max)
+    } else {
+      NULL
+    }
     facet_levels <- levels(droplevels(df$.facet))
     if (!length(facet_levels)) facet_levels <- unique(as.character(df$.facet))
     n_panels <- length(facet_levels)
@@ -11321,9 +11348,9 @@ server <- function(input, output, session) {
       set.seed(42)
       jitter_x <- x + runif(length(x), -0.18, 0.18)
       if (color_is_numeric) {
-        point_cols <- continuous_palette(panel_df[[color_source]])
+        point_cols <- continuous_palette(panel_df[[color_source]], limits = palette_limits)
         bar_color_values <- tapply(suppressWarnings(as.numeric(panel_df[[color_source]])), panel_df$.group, mean, na.rm = TRUE)
-        bar_cols <- continuous_palette(bar_color_values)
+        bar_cols <- continuous_palette(bar_color_values, limits = palette_limits)
         names(bar_cols) <- names(bar_color_values)
       } else {
         color_factor <- if (color_source %in% names(panel_df)) ordered_factor_for_plot(panel_df[[color_source]]) else panel_df$.group
@@ -11355,7 +11382,7 @@ server <- function(input, output, session) {
       axis(1, at = seq_along(levels_x), labels = display_levels_x, las = 2, cex.axis = if (n_panels > 1) 0.62 else 0.75)
       if (!apply_facets || identical(facet_label, facet_levels[[1]])) {
         if (color_is_numeric) {
-          draw_continuous_palette_legend(color_source_label, panel_df[[color_source]])
+          draw_continuous_palette_legend(color_source_label, panel_df[[color_source]], limits = palette_limits)
           legend("topright", legend = "Group mean", pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = 0.75)
         } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
           legend("topright", legend = c(levels(color_factor), "Group mean"), pch = c(rep(19, length(levels(color_factor))), 23), pt.bg = c(rep(NA, length(levels(color_factor))), "#fbf1d7"), col = c(pal, "#173f35"), bty = "n", cex = 0.7)
