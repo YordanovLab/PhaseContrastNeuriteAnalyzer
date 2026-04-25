@@ -4793,13 +4793,21 @@ server <- function(input, output, session) {
       set.seed(42)
       jitter_x <- x + runif(length(x), -0.18, 0.18)
       if (color_is_numeric) {
-        point_cols <- continuous_palette(panel_df[[color_source]], limits = palette_limits)
+        panel_palette_limits <- palette_limits
+        if (is.null(panel_palette_limits)) {
+          raw_color_vals <- suppressWarnings(as.numeric(panel_df[[color_source]]))
+          raw_color_vals <- raw_color_vals[is.finite(raw_color_vals)]
+          if (length(raw_color_vals)) {
+            panel_palette_limits <- range(raw_color_vals, na.rm = TRUE)
+          }
+        }
+        point_cols <- continuous_palette(panel_df[[color_source]], limits = panel_palette_limits)
         bar_color_values <- tapply(
           suppressWarnings(as.numeric(panel_df[[color_source]])),
           panel_df$.group,
           function(v) generalization_bar_summary_value(v, bar_color_summary_metric)
         )
-        bar_cols <- continuous_palette(bar_color_values, limits = palette_limits)
+        bar_cols <- continuous_palette(bar_color_values, limits = panel_palette_limits)
         names(bar_cols) <- names(bar_color_values)
       } else {
         color_factor <- if (color_source %in% names(panel_df)) ordered_factor_for_plot(panel_df[[color_source]]) else panel_df$.group
@@ -4849,7 +4857,7 @@ server <- function(input, output, session) {
               ")"
             ),
             panel_df[[color_source]],
-            limits = palette_limits
+            limits = panel_palette_limits
           )
           legend("topright", legend = bar_summary_label, pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = style_num(style, "legend_size", 9) / 11)
         } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
@@ -11467,7 +11475,7 @@ server <- function(input, output, session) {
           draw_continuous_palette_legend(
             paste0(color_source_label, " (dots raw; bars ", generalization_bar_summary_descriptor(bar_color_summary_metric), ")"),
             panel_df[[color_source]],
-            limits = palette_limits
+            limits = panel_palette_limits
           )
           legend("topright", legend = bar_summary_label, pch = 23, pt.bg = "#fbf1d7", col = "#173f35", bty = "n", cex = 0.75)
         } else if (exists("color_factor") && length(levels(color_factor)) <= 8) {
