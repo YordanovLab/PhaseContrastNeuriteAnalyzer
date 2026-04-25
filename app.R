@@ -4770,6 +4770,14 @@ server <- function(input, output, session) {
     display_levels_x <- recipe_tick_labels(style, "x_tick_labels", plot_display_labels(gsub(" \\| ", " | ", levels_x), width = 22))
     color_source <- if (identical(color_by, "__group__") || !color_by %in% names(df)) group else color_by
     color_is_numeric <- color_source %in% names(df) && vector_is_numeric_like(df[[color_source]])
+    figure_palette_limits <- palette_limits
+    if (color_is_numeric && is.null(figure_palette_limits)) {
+      raw_color_vals <- suppressWarnings(as.numeric(df[[color_source]]))
+      raw_color_vals <- raw_color_vals[is.finite(raw_color_vals)]
+      if (length(raw_color_vals)) {
+        figure_palette_limits <- range(raw_color_vals, na.rm = TRUE)
+      }
+    }
     facet_levels <- levels(droplevels(df$.facet))
     if (!length(facet_levels)) facet_levels <- unique(as.character(df$.facet))
     n_panels <- length(facet_levels)
@@ -4793,14 +4801,7 @@ server <- function(input, output, session) {
       set.seed(42)
       jitter_x <- x + runif(length(x), -0.18, 0.18)
       if (color_is_numeric) {
-        panel_palette_limits <- palette_limits
-        if (is.null(panel_palette_limits)) {
-          raw_color_vals <- suppressWarnings(as.numeric(panel_df[[color_source]]))
-          raw_color_vals <- raw_color_vals[is.finite(raw_color_vals)]
-          if (length(raw_color_vals)) {
-            panel_palette_limits <- range(raw_color_vals, na.rm = TRUE)
-          }
-        }
+        panel_palette_limits <- figure_palette_limits
         point_cols <- continuous_palette(panel_df[[color_source]], limits = panel_palette_limits)
         bar_color_values <- tapply(
           suppressWarnings(as.numeric(panel_df[[color_source]])),
@@ -11412,6 +11413,14 @@ server <- function(input, output, session) {
     } else {
       NULL
     }
+    figure_palette_limits <- palette_limits
+    if (color_is_numeric && is.null(figure_palette_limits)) {
+      raw_color_vals <- suppressWarnings(as.numeric(df[[color_source]]))
+      raw_color_vals <- raw_color_vals[is.finite(raw_color_vals)]
+      if (length(raw_color_vals)) {
+        figure_palette_limits <- range(raw_color_vals, na.rm = TRUE)
+      }
+    }
     facet_levels <- levels(droplevels(df$.facet))
     if (!length(facet_levels)) facet_levels <- unique(as.character(df$.facet))
     n_panels <- length(facet_levels)
@@ -11434,14 +11443,7 @@ server <- function(input, output, session) {
       set.seed(42)
       jitter_x <- x + runif(length(x), -0.18, 0.18)
       if (color_is_numeric) {
-        panel_palette_limits <- palette_limits
-        if (is.null(panel_palette_limits)) {
-          raw_color_vals <- suppressWarnings(as.numeric(panel_df[[color_source]]))
-          raw_color_vals <- raw_color_vals[is.finite(raw_color_vals)]
-          if (length(raw_color_vals)) {
-            panel_palette_limits <- range(raw_color_vals, na.rm = TRUE)
-          }
-        }
+        panel_palette_limits <- figure_palette_limits
         point_cols <- continuous_palette(panel_df[[color_source]], limits = panel_palette_limits)
         bar_color_values <- tapply(
           suppressWarnings(as.numeric(panel_df[[color_source]])),
